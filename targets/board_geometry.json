@@ -1,0 +1,39 @@
+{
+  "charuco": {
+    "dictionary": "DICT_5X5_50",
+    "squares_x": 10,
+    "squares_y": 6,
+    "marker_ratio": 0.7,
+    "display": {
+      "file": "charuco_display.png",
+      "size_px": [
+        1920,
+        1200
+      ],
+      "square_size_px": 192,
+      "square_size_mm": 34.4,
+      "pixel_pitch_mm": 0.17916666666666667
+    },
+    "print": {
+      "file": "charuco_print.pdf",
+      "square_size_mm": 20.0,
+      "dpi": 300
+    }
+  },
+  "slanted_edge": {
+    "file": "slanted_edge.png",
+    "size_px": [
+      1920,
+      1200
+    ],
+    "angle_deg": 5.0
+  },
+  "gray_ramp": {
+    "file": "gray_ramp.png",
+    "size_px": [
+      1920,
+      1200
+    ],
+    "n_steps": 25
+  }
+}

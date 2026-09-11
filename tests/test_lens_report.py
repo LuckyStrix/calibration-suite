@@ -1,0 +1,71 @@
+from calsuite.fit import Analysis
+from calsuite.lens import report as R
+from calsuite.store import Record
+
+
+def _device():
+    return {"kind": "lens", "model": "Test Lens 50mm", "id": "test-lens-50mm-unknown", "firmware": ""}
+
+
+def test_render_lens_report_with_no_records_still_renders():
+    html = R.render_lens_report(device=_device())
+    assert "<html" in html
+    assert "Test Lens 50mm" in html
+
+
+def test_render_lens_report_includes_available_sections():
+    distortion_analysis = Analysis(
+        result={"ptlens": {"a": 0.001, "b": -0.004, "c": 0.002}},
+        residuals={
+            "overall_rms_px": 0.12,
+            "coverage_grid": [[1, 2], [3, 4]],
+            "per_view_names": ["a.cr3", "b.cr3"],
+            "per_view_rms_px": [0.1, 0.14],
+        },
+    )
+    distortion_record = Record.from_analysis(
+        kind="lens.distortion", device=_device(), analysis=distortion_analysis, provenance="measured",
+        method={"name": "distortion.fit_distortion"},
+    )
+    tca_analysis = Analysis(result={"model": "poly3", "vr": 1.0002, "vb": 0.9998, "kr": 1.0002, "kb": 0.9998})
+    tca_record = Record.from_analysis(
+        kind="lens.tca", device=_device(), analysis=tca_analysis, provenance="measured", method={"name": "tca.fit_tca"}
+    )
+    mtf_analysis = Analysis(result={"mtf50_lp_per_mm_map": [[30.0, 28.0], [25.0, 22.0]]})
+    mtf_record = Record.from_analysis(
+        kind="lens.mtf", device=_device(), analysis=mtf_analysis, provenance="measured", method={"name": "mtf"}
+    )
+    psf_analysis = Analysis(
+        result={
+            "stars": [
+                {"x": 10.0, "y": 10.0, "sigma_major": 2.0, "sigma_minor": 1.0, "orientation_deg": 10.0, "orientation": "sagittal"},
+                {"x": 90.0, "y": 40.0, "sigma_major": 3.0, "sigma_minor": 2.5, "orientation_deg": -20.0, "orientation": "meridional"},
+            ]
+        }
+    )
+    psf_record = Record.from_analysis(
+        kind="lens.psf", device=_device(), analysis=psf_analysis, provenance="measured", method={"name": "psf"}
+    )
+
+    html = R.render_lens_report(
+        device=_device(),
+        distortion_record=distortion_record,
+        tca_record=tca_record,
+        mtf_record=mtf_record,
+        psf_record=psf_record,
+    )
+    assert "Coverage" in html
+    assert "Chromatic aberration" in html
+    assert "MTF50" in html
+    assert "PSF field map" in html
+    assert "<ellipse" in html
+
+
+def test_render_lens_report_shows_refusal_box_for_refused_distortion():
+    a = Analysis()
+    a.refuse("coverage", "outer field not covered")
+    record = Record.from_analysis(
+        kind="lens.distortion", device=_device(), analysis=a, provenance="measured", method={"name": "x"}
+    )
+    html = R.render_lens_report(device=_device(), distortion_record=record)
+    assert "Refused" in html

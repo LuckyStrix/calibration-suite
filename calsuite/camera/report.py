@@ -1,0 +1,213 @@
+"""The R100 sensor report (docs/design.md §3.1 "Deliverable"): one
+self-contained HTML page built from whichever of this area's records are
+available, via ``report.html.render_report`` + ``report.svg``. Every section
+is optional -- a report can be rendered from a partial set of records (e.g.
+before darks have been shot), and simply omits the sections it has no data
+for.
+"""
+
+from __future__ import annotations
+
+from calsuite.constants import ESTIMATED_ACCURACY
+from calsuite.report import html as report_html
+from calsuite.report import svg
+
+STAR_TRACKER_SENTENCE_TEMPLATE = (
+    "ISO {iso} is the invariance point; above it you're only losing headroom."
+)
+# The exact sentence docs/design.md §3.1 asks for, for the star tracker
+# README, with the recommended ISO (camera.iso's result) substituted in.
+
+CHANNEL_ORDER = ("R", "G1", "G2", "B")
+
+
+def _ptc_section(record) -> dict | None:
+    if record is None:
+        return None
+    channels = record.result.get("channels", {})
+    series = []
+    for ch in CHANNEL_ORDER:
+        fit = channels.get(ch, {}).get("fit")
+        if not fit:
+            continue
+        series.append({"name": ch, "x": fit["signal_dn_used"], "y": fit["var_diff_dn2_used"]})
+    chart = svg.line_chart(
+        series,
+        title="Photon transfer curve",
+        x_label="signal (DN, black-subtracted)",
+        y_label="Var(A-B)/2 (DN^2)",
+        log_x=True,
+        log_y=True,
+        mode="scatter",
+    ) if series else ""
+
+    rows = []
+    for ch in CHANNEL_ORDER:
+        fit = channels.get(ch, {}).get("fit")
+        if not fit:
+            continue
+        rows.append(
+            {
+                "channel": ch,
+                "gain": f"{fit['gain_e_per_dn']:.3f}",
+                "read_noise_e": f"{fit['read_noise_e']:.3f}",
+                "n_levels_used": fit["n_levels_used"],
+            }
+        )
+    table = report_html.table(rows, [("channel", "channel"), ("gain", "gain (e-/DN)"), ("read_noise_e", "read noise (e-)"), ("n_levels_used", "levels used")])
+    return {"heading": "Photon transfer curve", "html": chart + table}
+
+
+def _read_noise_vs_iso_section(iso_record) -> dict | None:
+    if iso_record is None:
+        return None
+    by_iso = iso_record.result.get("read_noise_e_by_iso", {})
+    if not by_iso:
+        return None
+    isos = sorted(by_iso, key=lambda k: float(k))
+    chart = svg.line_chart(
+        [{"name": "read noise", "x": [float(i) for i in isos], "y": [by_iso[i] for i in isos]}],
+        title="Input-referred read noise vs. ISO",
+        x_label="ISO",
+        y_label="read noise (e-)",
+        log_x=True,
+        mode="both",
+    )
+    recommended = iso_record.result.get("recommended_iso")
+    note = f"<p>Recommended ISO: <strong>{recommended}</strong></p>" if recommended is not None else ""
+    return {"heading": "ISO invariance", "html": chart + note}
+
+
+def _linearity_section(record) -> dict | None:
+    if record is None:
+        return None
+    channels = record.result.get("channels", {})
+    series = []
+    for ch in CHANNEL_ORDER:
+        data = channels.get(ch)
+        if not data:
+            continue
+        series.append({"name": ch, "x": data["exposure_s"], "y": data["deviation_pct"]})
+    if not series:
+        return None
+    chart = svg.line_chart(
+        series,
+        title="Linearity residuals",
+        x_label="exposure (s)",
+        y_label="deviation from baseline (%)",
+        mode="both",
+    )
+    return {"heading": "Linearity", "html": chart}
+
+
+def _darks_section(record) -> dict | None:
+    if record is None:
+        return None
+    channels = record.result.get("channels", {})
+    series = []
+    for ch in CHANNEL_ORDER:
+        bins = channels.get(ch, {}).get("temp_bins", {})
+        if not bins:
+            continue
+        temps = sorted(bins, key=lambda t: float(t))
+        series.append({"name": ch, "x": [float(t) for t in temps], "y": [bins[t]["dark_current_e_per_s"] for t in temps]})
+    chart = (
+        svg.line_chart(series, title="Dark current vs. temperature", x_label="sensor temp (C)", y_label="e-/s", log_y=True, mode="both")
+        if series
+        else ""
+    )
+
+    hot = record.result.get("hot_pixels_by_exposure_s", {})
+    bar_rows = [(f"{exp}s", info["count"]) for exp, info in sorted(hot.items(), key=lambda kv: float(kv[0]))]
+    bars = svg.bar_chart(bar_rows) if bar_rows else ""
+    return {"heading": "Dark current + hot pixels", "html": chart + bars}
+
+
+def _error_budget(ptc_record, linearity_record) -> list:
+    entries = []
+    if ptc_record is not None:
+        gains = [
+            channels["fit"]["gain_uncertainty_e_per_dn"]
+            for channels in ptc_record.result.get("channels", {}).values()
+            if "fit" in channels and channels["fit"].get("gain_uncertainty_e_per_dn") is not None
+        ]
+        gain_vals = [
+            channels["fit"]["gain_e_per_dn"] for channels in ptc_record.result.get("channels", {}).values() if "fit" in channels
+        ]
+        if gains and gain_vals:
+            achieved_pct = max(g / v for g, v in zip(gains, gain_vals, strict=False)) * 100.0
+            entries.append(
+                {"quantity": "gain", "expected": ESTIMATED_ACCURACY["gain_pct"], "achieved": round(achieved_pct, 2), "unit": "%"}
+            )
+        read_noise_vals = [
+            channels["fit"]["read_noise_e"] for channels in ptc_record.result.get("channels", {}).values() if "fit" in channels
+        ]
+        read_noise_unc = [
+            channels["fit"]["read_noise_uncertainty_e"]
+            for channels in ptc_record.result.get("channels", {}).values()
+            if "fit" in channels and channels["fit"].get("read_noise_uncertainty_e") is not None
+        ]
+        if read_noise_vals and read_noise_unc:
+            achieved_pct = max(u / v for u, v in zip(read_noise_unc, read_noise_vals, strict=False) if v) * 100.0
+            entries.append(
+                {
+                    "quantity": "read noise",
+                    "expected": ESTIMATED_ACCURACY["read_noise_pct"],
+                    "achieved": round(achieved_pct, 2),
+                    "unit": "%",
+                }
+            )
+    return entries
+
+
+def render_sensor_report(
+    *,
+    device: dict,
+    bias_record=None,
+    ptc_record=None,
+    linearity_record=None,
+    darks_record=None,
+    iso_record=None,
+    shutter_record=None,
+) -> str:
+    """Assemble the single-file sensor HTML report from whichever records
+    are available. ``device``: a ``devices.DeviceRef.to_dict()``-shaped
+    dict. Every ``*_record`` is a ``store.Record`` or ``None``.
+    """
+    # The "primary" record for the page shell's provenance/status/refusals:
+    # ptc if we have it (the record most other numbers here hang off of),
+    # else whichever record is available first, else a bare "no data" shell.
+    primary = next(
+        (r for r in (ptc_record, bias_record, linearity_record, darks_record, iso_record, shutter_record) if r is not None),
+        None,
+    )
+    provenance = primary.provenance if primary else "nominal"
+    status = primary.status if primary else "ok"
+    refusals = list(primary.refusals) if primary else []
+    for r in (bias_record, ptc_record, linearity_record, darks_record, iso_record, shutter_record):
+        if r is not None and r is not primary:
+            refusals.extend(r.refusals)
+
+    recommended_iso = iso_record.result.get("recommended_iso") if iso_record else None
+    star_tracker_sentence = STAR_TRACKER_SENTENCE_TEMPLATE.format(iso=recommended_iso if recommended_iso is not None else "N")
+
+    sections = []
+    for section in (
+        _ptc_section(ptc_record),
+        _read_noise_vs_iso_section(iso_record),
+        _linearity_section(linearity_record),
+        _darks_section(darks_record),
+    ):
+        if section is not None:
+            sections.append(section)
+    sections.append({"heading": "Star tracker recommendation", "html": f"<p>{star_tracker_sentence}</p>"})
+
+    return report_html.render_report(
+        title=f"{device.get('model', 'camera')} sensor report",
+        device=device,
+        provenance=provenance,
+        status=status,
+        refusals=refusals,
+        error_budget=_error_budget(ptc_record, linearity_record),
+        sections=sections,
+    )
