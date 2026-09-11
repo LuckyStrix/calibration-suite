@@ -1,0 +1,12 @@
+-r requirements.txt
+pytest
+ruff
+pygame
+
+# lensfunpy lets the lens wave verify exported lensfun XML by loading it back
+# (design doc, wave 2B). Checked at Wave 1 build time (2026-09-11): a prebuilt
+# wheel exists for py3.11 linux (lensfunpy 1.18.0), so it installs cleanly
+# here. On a platform/interpreter with no wheel it needs a source build
+# against liblensfun, which may not be available -- lensfunpy-dependent tests
+# should skip (not fail) when `import lensfunpy` raises.
+lensfunpy

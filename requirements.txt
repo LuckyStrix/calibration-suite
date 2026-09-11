@@ -1,0 +1,6 @@
+numpy
+scipy
+opencv-python-headless>=4.8
+rawpy
+colour-science
+Pillow

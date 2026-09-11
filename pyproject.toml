@@ -1,0 +1,38 @@
+[project]
+name = "calibration-suite"
+version = "0.1.0"
+description = "Calibration suite: camera sensor, lens and display calibration with provenance."
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[project.scripts]
+calsuite = "calsuite.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+# Flat layout, no src/ -- the design doc's paths (calsuite/...) are the
+# paths on disk, so anyone reading it can find the file directly.
+where = ["."]
+include = ["calsuite*"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 110
+src = [".", "tests"]
+
+[tool.ruff.lint]
+# Deliberately narrow. `F` and `B` find mistakes -- a name that is not defined,
+# a mutable default, a `zip` over two things that are not the same length. The
+# formatting and import-ordering rules are left off on purpose: the layout of
+# this codebase is a choice, and a linter that reformats it would bury the
+# findings that matter in a few hundred that do not.
+select = ["E4", "E7", "E9", "F", "B"]

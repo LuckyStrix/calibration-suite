@@ -1,0 +1,270 @@
+"""Record store: schema v1 JSON files, plus sidecar ``.npz`` artifacts.
+
+Layout: ``records/<device-id>/<kind>-<UTC stamp>-<rand>.json``, with any
+array artifacts saved as ``records/<device-id>/<record-id>.<name>.npz`` next
+to it. Refused records are saved too (house rule 3, docs/design.md: "a
+refusal is a finding") -- ``status="refused"`` plus ``require_exportable()``
+is what stops one being used downstream, not omission from the store.
+"""
+
+from __future__ import annotations
+
+import json
+import secrets
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+
+from calsuite import provenance as prov
+from calsuite.fit import Analysis, Refusal
+from calsuite.raw import sha256_file
+
+SCHEMA_VERSION = 1
+
+# How long a record of each kind stays trustworthy before doctor.py flags it
+# stale, in days. Every value has a *reason*, not just a source -- same
+# convention as hydrationTracker's model/constants.py.
+SHELF_LIFE_DAYS = {
+    # Sensor electronics (gain, read noise, dark current shape) drift with
+    # the silicon and with firmware, not with the seasons -- a year is
+    # conservative against both, and doctor.py's separate firmware-change
+    # check catches the faster-moving case independently of elapsed time.
+    "camera.bias": 365,
+    "camera.ptc": 365,
+    "camera.linearity": 365,
+    "camera.darks": 180,  # dark current is temperature-dependent and ambient temperature drifts seasonally
+    "camera.fixed_pattern": 365,
+    "camera.iso": 365,
+    "camera.shutter": 365,
+    "camera.color": 180,  # sensor aging plus the reference chart/light source it depended on
+    "camera.ssf": 730,  # a physical property of the filter stack; changes only if the sensor itself is replaced
+    "camera.dcp": 180,  # derived from camera.color -- inherits its shelf life rather than getting a longer one of its own
+    # Lens optics are mechanically stable but can shift after a drop, a
+    # service, or (on zooms) sample variation at a different focus-breathing
+    # state -- a year balances "rarely changes" against "trust a five-year-
+    # old distortion map on a lens that's been dropped since".
+    "lens.distortion": 365,
+    "lens.tca": 365,
+    "lens.flats": 365,
+    "lens.mtf": 365,
+    "lens.psf": 365,
+    # Displays age (backlight dims, primaries drift) faster than camera
+    # sensors or lens glass -- three months matches the commonly-cited
+    # "recalibrate quarterly" guidance for LCDs used for critical work.
+    "display.measurement": 90,
+    "display.profile": 90,
+    "display.validation": 90,
+    "display.nominal": 3650,  # an EDID reading; "stale" only if the panel changes (doctor's EDID-hash check), not with time
+}
+DEFAULT_SHELF_LIFE_DAYS = 180
+# Applied to any kind not listed above: a conservative middle ground rather
+# than silently treating an unlisted kind as eternal.
+
+
+def utcnow_stamp() -> str:
+    """UTC timestamp, filesystem- and JSON-safe, sortable as plain text."""
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def new_id(kind: str) -> str:
+    """kind + UTC stamp + a few random hex chars, so two records of the same
+    kind created in the same second (a batch analysis script) never
+    collide."""
+    return f"{kind}-{utcnow_stamp()}-{secrets.token_hex(3)}"
+
+
+@dataclass
+class Record:
+    """Schema v1 -- every field docs/implementation-plan.md's "Core
+    contracts" section lists, in the order it lists them. ``to_dict``/
+    ``from_dict`` are the only (de)serialization path; ``Store`` uses them
+    and tests building a ``Record`` from a fixture dict should too, so a
+    schema change only has to happen in one place.
+    """
+
+    schema: int
+    id: str
+    kind: str
+    device: dict  # DeviceRef.to_dict() of the record's primary device
+    devices: list = field(default_factory=list)  # other involved devices, e.g. the body a lens record was shot on
+    created: str = ""  # UTC stamp, utcnow_stamp() format; filled in by __post_init__ if omitted
+    provenance: str = "nominal"
+    status: str = "ok"  # "ok" | "refused"
+    refusals: list = field(default_factory=list)  # list of dicts (Refusal.to_dict())
+    conditions: dict = field(default_factory=dict)
+    method: dict = field(default_factory=dict)  # {"name":..., "calsuite_version":..., "params": {...}}
+    inputs: list = field(default_factory=list)  # [{"name":..., "sha256":...}, ...]
+    derived_from: list = field(default_factory=list)  # [record id, ...]
+    result: dict = field(default_factory=dict)
+    residuals: dict = field(default_factory=dict)
+    uncertainty: dict = field(default_factory=dict)
+    artifacts: list = field(default_factory=list)  # [{"name":..., "sha256":...}, ...] filled in by Store.save()
+
+    def __post_init__(self):
+        if self.provenance not in prov.PROVENANCE:
+            raise ValueError(f"unknown provenance {self.provenance!r}; must be one of {prov.PROVENANCE}")
+        if self.status not in ("ok", "refused"):
+            raise ValueError(f"status must be 'ok' or 'refused', got {self.status!r}")
+        if not self.created:
+            self.created = utcnow_stamp()
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Record:
+        return cls(**d)
+
+    @classmethod
+    def from_analysis(
+        cls,
+        *,
+        kind: str,
+        device: dict,
+        analysis: Analysis,
+        provenance: str,
+        method: dict,
+        inputs: list | None = None,
+        conditions: dict | None = None,
+        devices: list | None = None,
+        derived_from: list | None = None,
+    ) -> Record:
+        """Build a ``Record`` from a pure ``fit.Analysis`` result -- the one
+        place that translates "arrays in, Analysis out" into the stored
+        schema, so every ``commands.py`` doesn't reinvent this mapping."""
+        return cls(
+            schema=SCHEMA_VERSION,
+            id=new_id(kind),
+            kind=kind,
+            device=device,
+            devices=devices or [],
+            provenance=provenance,
+            status="ok" if analysis.ok else "refused",
+            refusals=[r.to_dict() if isinstance(r, Refusal) else r for r in analysis.refusals],
+            conditions=conditions or {},
+            method=method,
+            inputs=inputs or [],
+            derived_from=derived_from or [],
+            result=analysis.result,
+            residuals=analysis.residuals,
+            uncertainty=analysis.uncertainty,
+        )
+
+
+class ExportRefused(RuntimeError):
+    """Raised by ``require_exportable`` -- a record that failed its checks,
+    or carries weak provenance, is not fit to hand to lensfun/ICC/DCP
+    export."""
+
+
+def require_exportable(record: Record) -> None:
+    """Refuse to let a bad or under-evidenced record leave the suite.
+
+    A record may be exported (written into lensfun XML, installed as a
+    system ICC profile, baked into a DCP, ...) only if its analysis passed
+    (``status == "ok"``) **and** its provenance is strong enough to stand
+    behind (``measured`` or ``derived`` -- see ``provenance.EXPORTABLE``).
+    Every export path is expected to call this before writing anything.
+    """
+    if record.status != "ok":
+        messages = [r.get("message", r) if isinstance(r, dict) else r for r in record.refusals]
+        raise ExportRefused(f"record {record.id} has status={record.status!r}: {messages}")
+    if not prov.is_exportable(record.provenance):
+        raise ExportRefused(
+            f"record {record.id} has provenance={record.provenance!r}, which is not one of {prov.EXPORTABLE}"
+        )
+
+
+class Store:
+    """``records/<device-id>/<record-id>.json`` (+ ``.npz`` sidecars) on disk."""
+
+    def __init__(self, root: Path | str):
+        self.root = Path(root)
+
+    # -- paths -----------------------------------------------------------
+
+    def _device_dir(self, device_id: str) -> Path:
+        return self.root / device_id
+
+    def _record_path(self, record: Record) -> Path:
+        return self._device_dir(record.device["id"]) / f"{record.id}.json"
+
+    def _artifact_path(self, record: Record, name: str) -> Path:
+        return self._device_dir(record.device["id"]) / f"{record.id}.{name}.npz"
+
+    # -- writing -----------------------------------------------------------
+
+    def save(self, record: Record, artifacts: dict | None = None) -> Path:
+        """Write ``<id>.json``, and (if given) one ``.npz`` sidecar per
+        artifact.
+
+        ``artifacts`` maps a name (e.g. ``"prnu_map"``) to a dict of array
+        name -> ``ndarray``, written with ``np.savez_compressed``. Each
+        sidecar's SHA-256 is recorded on ``record.artifacts`` so the JSON
+        alone documents everything that was written, and a later reader can
+        verify a sidecar hasn't been altered without re-deriving it.
+        """
+        device_dir = self._device_dir(record.device["id"])
+        device_dir.mkdir(parents=True, exist_ok=True)
+
+        record.artifacts = []
+        for name, arrays in (artifacts or {}).items():
+            path = self._artifact_path(record, name)
+            np.savez_compressed(path, **arrays)
+            record.artifacts.append({"name": name, "sha256": sha256_file(path)})
+
+        path = self._record_path(record)
+        path.write_text(json.dumps(record.to_dict(), indent=2))
+        return path
+
+    # -- reading -----------------------------------------------------------
+
+    def load(self, path: Path | str) -> Record:
+        data = json.loads(Path(path).read_text())
+        return Record.from_dict(data)
+
+    def load_artifact(self, record: Record, name: str) -> dict:
+        path = self._artifact_path(record, name)
+        with np.load(path) as npz:
+            return {k: npz[k] for k in npz.files}
+
+    def all(self, kind: str | None = None, device_id: str | None = None):
+        """Yield every ``Record`` under ``root``, optionally filtered by
+        ``kind`` and/or ``device_id``."""
+        if not self.root.is_dir():
+            return
+        dirs = [self._device_dir(device_id)] if device_id else sorted(self.root.glob("*"))
+        for d in dirs:
+            if not d.is_dir():
+                continue
+            for p in sorted(d.glob("*.json")):
+                record = self.load(p)
+                if kind is not None and record.kind != kind:
+                    continue
+                yield record
+
+    # "iterate" is named explicitly alongside "all" in the design doc; both
+    # exist because `for r in store.iterate():` reads better at a call site
+    # that wants a generator, while `list(store.all())` reads better where a
+    # caller wants the whole list immediately. Same generator either way.
+    iterate = all
+
+    def latest(self, kind: str, device_id: str) -> Record | None:
+        """Most recent record of ``kind`` for ``device_id`` by ``created``,
+        or ``None``. Refused records count -- doctor.py and staleness
+        checks want the most recent *attempt*, not just the most recent
+        success; a caller that wants only the last good one filters
+        ``status == "ok"`` itself."""
+        records = list(self.all(kind=kind, device_id=device_id))
+        if not records:
+            return None
+        return max(records, key=lambda r: r.created)
+
+    def is_stale(self, record: Record, *, now: datetime | None = None) -> bool:
+        """True if ``record`` is older than its kind's shelf life."""
+        now = now or datetime.now(timezone.utc)
+        created = datetime.strptime(record.created, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        max_age = SHELF_LIFE_DAYS.get(record.kind, DEFAULT_SHELF_LIFE_DAYS)
+        return (now - created).days > max_age

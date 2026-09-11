@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environment
+.venv/
+venv/
+
+# Captures: raw files are 25-30 MB each and a PTC session is 100+ frames.
+# They do not belong in a public git repo, and the default captures dir
+# (~/calsuite-captures) already lives outside this tree -- this is a second
+# line of defense for anyone who points --from at a folder under here.
+captures/
+*.cr3
+*.CR3
+*.dng
+*.DNG
+*.nef
+*.NEF
+
+# NOTE: records/** is intentionally NOT ignored. Records are small JSON (plus
+# .npz sidecars) and are meant to be committed -- they are the suite's actual
+# output and its provenance trail.
