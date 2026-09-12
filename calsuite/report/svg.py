@@ -111,7 +111,22 @@ def line_chart(
 ) -> str:
     """``series``: ``[{"name": str, "x": [...], "y": [...]}]`` (equal-length
     x/y per series). Multiple series share one pair of axes and get a
-    legend. ``mode`` is ``"line"``, ``"scatter"``, or ``"both"``."""
+    legend. ``mode`` is ``"line"``, ``"scatter"``, or ``"both"``.
+
+    A point whose ``x`` or ``y`` is ``None`` (an optional per-point value a
+    partial or refused record doesn't have for every sample) is dropped
+    rather than plotted or left to blow up the axis-bounds computation --
+    ``min()``/``max()`` over a list containing ``None`` raises ``TypeError``
+    the moment Python tries to compare it against a real number.
+    """
+    series = [
+        {
+            **s,
+            "x": [x for x, y in zip(s.get("x", []), s.get("y", []), strict=True) if x is not None and y is not None],
+            "y": [y for x, y in zip(s.get("x", []), s.get("y", []), strict=True) if x is not None and y is not None],
+        }
+        for s in series
+    ]
     if not series or not any(s["x"] for s in series):
         return _svg_open(width, height, title) + "</svg>"
 
@@ -285,7 +300,12 @@ def bar_chart(rows: list, *, width: int = 520, label_width: int = 170) -> str:
     display_str), ...]``. Horizontal bars in the given order -- sort
     before calling if a particular order matters. Same shape as
     ``CIS_Stockroom_Inventory_System/src/stockroom/reports.py``'s
-    ``bar_chart``."""
+    ``bar_chart``.
+
+    ``value`` may be ``None`` (an optional quantity a refused/partial
+    record doesn't have) -- drawn as a zero-length bar labeled "not
+    measured" rather than raising on ``float(None)``.
+    """
     if not rows:
         return ""
     norm = []
@@ -294,8 +314,11 @@ def bar_chart(rows: list, *, width: int = 520, label_width: int = 170) -> str:
             label, value, display = row
         else:
             label, value = row
-            display = _fmt(value)
-        norm.append((label, float(value), display))
+            display = None
+        if value is None:
+            norm.append((label, 0.0, display if display is not None else "not measured"))
+            continue
+        norm.append((label, float(value), display if display is not None else _fmt(value)))
 
     bar_height, gap, top = 22, 8, 6
     height = top * 2 + len(norm) * (bar_height + gap) - gap

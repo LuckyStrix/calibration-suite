@@ -71,3 +71,31 @@ def test_conditions_rendered_when_present():
         conditions={"iso": 800, "aperture": "f/1.8"},
     )
     assert "iso" in out and "800" in out
+
+
+def test_optional_number_formats_present_value():
+    assert reporthtml.optional_number(1.23456) == "1.235"
+    assert reporthtml.optional_number(0.5, "{:.0%}") == "50%"
+    assert reporthtml.optional_number(2.0, unit="e-") == "2.000 e-"
+
+
+def test_optional_number_none_is_not_measured():
+    assert reporthtml.optional_number(None) == reporthtml.NOT_MEASURED
+    assert reporthtml.optional_number(None, "{:.5f}", unit="px") == reporthtml.NOT_MEASURED
+
+
+def test_optional_number_never_raises_on_a_bad_format_spec():
+    # A value of the wrong type for its format spec must not crash a
+    # report either -- falls back to plain str().
+    assert reporthtml.optional_number("not a number", "{:.3f}") == "not a number"
+
+
+def test_optional_text_none_is_not_measured():
+    assert reporthtml.optional_text(None) == reporthtml.NOT_MEASURED
+    assert reporthtml.optional_text(3, formatter=lambda v: f"#{v}") == "#3"
+
+
+def test_error_budget_table_shows_not_measured_for_none_not_the_literal_none():
+    out = reporthtml.error_budget_table([{"quantity": "gain", "expected": 2.5, "achieved": None, "unit": "%"}])
+    assert "not measured" in out
+    assert ">None<" not in out

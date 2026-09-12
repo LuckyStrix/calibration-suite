@@ -1,5 +1,5 @@
 from calsuite.display import report as reportmod
-from calsuite.fit import Analysis
+from calsuite.fit import Analysis, Refusal
 
 
 def test_render_includes_every_supplied_section():
@@ -50,3 +50,45 @@ def test_render_omits_sections_not_supplied():
     html = reportmod.render(title="Display report", device={"model": "x", "id": "y"}, provenance="nominal")
     assert "Tone response curves" not in html
     assert "Validation" not in html
+
+
+def test_render_with_empty_result_dicts_does_not_raise():
+    # Regression guard: a section whose *analysis was supplied* but whose
+    # `.result` is empty (a refusal that returned before computing
+    # anything, a step that was skipped, an older record missing a key)
+    # used to crash formatting a bare `None` into `{de00:.3f}` --
+    # report.html.optional_number is what every value below now goes
+    # through. Every section is present here, deliberately with nothing in
+    # its result, so this exercises every "optional value" branch at once.
+    html = reportmod.render(
+        title="Display report",
+        device={"model": "x", "id": "y"},
+        provenance="measured",
+        status="ok",
+        trc_analysis=Analysis(result={}),
+        primaries_analysis=Analysis(result={}),
+        additivity_analysis=Analysis(result={}),
+        uniformity_analysis=Analysis(result={}),
+        warmup_analysis=Analysis(result={}),
+        pwm_analysis=Analysis(result={"detected": True}),  # detected with no cycles_per_row/frequency_hz
+        validation_analysis=Analysis(result={}),
+        backend_accuracy={},
+    )
+    assert "<html" in html
+    assert "not measured" in html
+
+
+def test_render_with_refused_analyses_does_not_raise():
+    refusal = Refusal("x", "refused before computing anything")
+    html = reportmod.render(
+        title="Display report",
+        device={"model": "x", "id": "y"},
+        provenance="measured",
+        status="refused",
+        refusals=[refusal.to_dict()],
+        additivity_analysis=Analysis(refusals=[refusal]),
+        validation_analysis=Analysis(refusals=[refusal]),
+    )
+    assert "<html" in html
+    assert "Refused" in html
+    assert "not measured" in html

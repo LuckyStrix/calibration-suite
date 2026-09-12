@@ -49,9 +49,9 @@ def _ptc_section(record) -> dict | None:
         rows.append(
             {
                 "channel": ch,
-                "gain": f"{fit['gain_e_per_dn']:.3f}",
-                "read_noise_e": f"{fit['read_noise_e']:.3f}",
-                "n_levels_used": fit["n_levels_used"],
+                "gain": report_html.optional_number(fit.get("gain_e_per_dn")),
+                "read_noise_e": report_html.optional_number(fit.get("read_noise_e")),
+                "n_levels_used": report_html.optional_text(fit.get("n_levels_used")),
             }
         )
     table = report_html.table(rows, [("channel", "channel"), ("gain", "gain (e-/DN)"), ("read_noise_e", "read noise (e-)"), ("n_levels_used", "levels used")])
@@ -124,29 +124,27 @@ def _darks_section(record) -> dict | None:
 
 
 def _error_budget(ptc_record, linearity_record) -> list:
+    """Every ``fit`` sub-dict is read with ``.get(...)``, never direct
+    indexing, and only entries where *every* value involved is present are
+    kept -- a ``fit`` dict can legitimately exist but be missing a specific
+    key (a hand-built/partial record, or a future schema change), and this
+    must degrade to "no error-budget entry for that quantity" rather than
+    a ``KeyError`` reaching straight into a chain of ``["fit"]["key"]``.
+    """
     entries = []
     if ptc_record is not None:
-        gains = [
-            channels["fit"]["gain_uncertainty_e_per_dn"]
-            for channels in ptc_record.result.get("channels", {}).values()
-            if "fit" in channels and channels["fit"].get("gain_uncertainty_e_per_dn") is not None
-        ]
-        gain_vals = [
-            channels["fit"]["gain_e_per_dn"] for channels in ptc_record.result.get("channels", {}).values() if "fit" in channels
-        ]
+        fits = [c.get("fit") or {} for c in ptc_record.result.get("channels", {}).values()]
+
+        gains = [f["gain_uncertainty_e_per_dn"] for f in fits if f.get("gain_uncertainty_e_per_dn") is not None]
+        gain_vals = [f["gain_e_per_dn"] for f in fits if f.get("gain_e_per_dn") is not None]
         if gains and gain_vals:
             achieved_pct = max(g / v for g, v in zip(gains, gain_vals, strict=False)) * 100.0
             entries.append(
                 {"quantity": "gain", "expected": ESTIMATED_ACCURACY["gain_pct"], "achieved": round(achieved_pct, 2), "unit": "%"}
             )
-        read_noise_vals = [
-            channels["fit"]["read_noise_e"] for channels in ptc_record.result.get("channels", {}).values() if "fit" in channels
-        ]
-        read_noise_unc = [
-            channels["fit"]["read_noise_uncertainty_e"]
-            for channels in ptc_record.result.get("channels", {}).values()
-            if "fit" in channels and channels["fit"].get("read_noise_uncertainty_e") is not None
-        ]
+
+        read_noise_vals = [f["read_noise_e"] for f in fits if f.get("read_noise_e") is not None]
+        read_noise_unc = [f["read_noise_uncertainty_e"] for f in fits if f.get("read_noise_uncertainty_e") is not None]
         if read_noise_vals and read_noise_unc:
             achieved_pct = max(u / v for u, v in zip(read_noise_unc, read_noise_vals, strict=False) if v) * 100.0
             entries.append(

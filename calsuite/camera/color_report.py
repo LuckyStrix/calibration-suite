@@ -64,8 +64,10 @@ def _swatch_strip(names: list, reference_hex: list, predicted_hex: list, *, widt
 
 
 def _matrix_table_html(matrix: list) -> str:
+    if not matrix:
+        return f"<p>{report_html.NOT_MEASURED}</p>"
     rows = "".join(
-        "<tr>" + "".join(f"<td>{v:.5f}</td>" for v in row) + "</tr>" for row in matrix
+        "<tr>" + "".join(f"<td>{report_html.optional_number(v, '{:.5f}')}</td>" for v in row) + "</tr>" for row in matrix
     )
     return f"<table><tbody>{rows}</tbody></table>"
 
@@ -132,20 +134,20 @@ def render(record, reference=None) -> str:
         sections.append({"heading": "Reference vs. predicted swatches", "html": _swatch_strip(names, ref_hex, pred_hex)})
 
     if "smi" in result or "mean_delta_e_ab" in result:
+        smi = report_html.optional_number(result.get("smi"), "{:.1f}")
+        mean_de_ab = report_html.optional_number(result.get("mean_delta_e_ab"))
         sections.append(
             {
                 "heading": "Sensor metamerism index (ISO 17321-1)",
-                "html": (
-                    f"<p>SMI = {result.get('smi', float('nan')):.1f} "
-                    f"(mean dE*ab over 18 chromatic patches: {result.get('mean_delta_e_ab', float('nan')):.3f})</p>"
-                ),
+                "html": f"<p>SMI = {smi} (mean dE*ab over 18 chromatic patches: {mean_de_ab})</p>",
             }
         )
     if "luther_ives_deviation" in result:
+        deviation = report_html.optional_number(result.get("luther_ives_deviation"), "{:.5f}")
         sections.append(
             {
                 "heading": "Luther-Ives deviation",
-                "html": f"<p>{result['luther_ives_deviation']:.5f} (normalized RMS residual; 0 = exact linear recombination of the CIE CMFs)</p>",
+                "html": f"<p>{deviation} (normalized RMS residual; 0 = exact linear recombination of the CIE CMFs)</p>",
             }
         )
 

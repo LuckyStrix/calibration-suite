@@ -29,6 +29,56 @@ def _esc(text) -> str:
     return _html.escape(str(text), quote=True)
 
 
+NOT_MEASURED = "not measured"
+# The one string every report uses for "this value doesn't exist" --
+# picked so it reads honestly (house rule 7: "accuracy is stated, not
+# implied") rather than as a blank cell or a stray literal "None".
+
+
+def optional_number(value, fmt: str = "{:.3f}", *, unit: str = "") -> str:
+    """Render a value that may be ``None`` -- because the analysis it came
+    from refused before computing it, a step was skipped, or an older
+    record predates the field -- for display: the formatted number (with
+    ``unit`` appended, if given) when present, or :data:`NOT_MEASURED`
+    when it's ``None``.
+
+    Every report module used to splice an optional ``result.get(...)``
+    straight into an f-string format spec (``f"{de00:.3f}"``); that raises
+    ``TypeError: unsupported format string passed to NoneType.__format__``
+    the moment the value is actually absent, which is not a rare or
+    exceptional case here -- a refused analysis, a skipped step and an
+    older record missing the key are all ordinary things a report has to
+    render. Use this (or :func:`optional_text` for a non-numeric optional
+    value) everywhere an optional field is displayed, instead of a bare
+    f-string format spec, so "not measured" is what the reader sees
+    instead of a stack trace.
+
+    ``fmt`` is a ``str.format`` spec applied to ``value`` (default 3
+    decimal places, matching this suite's usual DeltaE00-style figures);
+    pass e.g. ``"{:.0%}"`` for a percentage. A value that doesn't match
+    ``fmt`` (the wrong type entirely -- shouldn't happen, but a report
+    must not crash over it either) falls back to its plain ``str()``.
+    """
+    if value is None:
+        return NOT_MEASURED
+    try:
+        text = fmt.format(value)
+    except (ValueError, TypeError):
+        text = str(value)
+    return f"{text} {unit}".strip() if unit else text
+
+
+def optional_text(value, formatter=str) -> str:
+    """Like :func:`optional_number`, for an optional value that isn't a
+    plain ``str.format`` numeric spec -- e.g. something rendered by a
+    small lambda/function (``formatter``) rather than a format string.
+    Returns :data:`NOT_MEASURED` for ``None``, ``formatter(value)``
+    otherwise."""
+    if value is None:
+        return NOT_MEASURED
+    return formatter(value)
+
+
 def provenance_badge(provenance: str) -> str:
     fg, bg = PROVENANCE_STYLE.get(provenance, PROVENANCE_STYLE["nominal"])
     return (
@@ -75,12 +125,16 @@ def error_budget_table(entries: list) -> str:
     """``entries``: ``[{"quantity":.., "expected":.., "achieved":..,
     "unit":..}, ...]``. Shows the estimate and the achieved number side by
     side without editorializing about pass/fail -- the report states the
-    numbers, the reader judges them (house rule 7)."""
+    numbers, the reader judges them (house rule 7). ``expected``/``achieved``
+    may be ``None`` (an unmeasured quantity, or a step that was skipped);
+    rendered as :data:`NOT_MEASURED` via :func:`optional_text`, a plain
+    ``str()`` for anything not itself absent, rather than a bare f-string
+    that would turn a real ``None`` into the literal text "None"."""
     rows = [
         {
             "quantity": e.get("quantity", ""),
-            "expected": f"{e.get('expected', '')} {e.get('unit', '')}".strip(),
-            "achieved": f"{e.get('achieved', '')} {e.get('unit', '')}".strip(),
+            "expected": f"{optional_text(e.get('expected'))} {e.get('unit', '')}".strip(),
+            "achieved": f"{optional_text(e.get('achieved'))} {e.get('unit', '')}".strip(),
         }
         for e in entries
     ]

@@ -69,3 +69,38 @@ def test_render_lens_report_shows_refusal_box_for_refused_distortion():
     )
     html = R.render_lens_report(device=_device(), distortion_record=record)
     assert "Refused" in html
+
+
+def test_render_lens_report_with_empty_result_dicts_does_not_raise():
+    # Regression guard: a record can be *present* (distortion/tca/mtf/psf
+    # all supplied) with an *empty* `.result` -- a refusal that returned
+    # before computing anything, or an older/partial record. Every section
+    # here must degrade to "nothing to show" rather than raising on a
+    # missing key.
+    def _empty(kind, method_name):
+        return Record.from_analysis(
+            kind=kind, device=_device(), analysis=Analysis(result={}), provenance="measured",
+            method={"name": method_name},
+        )
+
+    html = R.render_lens_report(
+        device=_device(),
+        distortion_record=_empty("lens.distortion", "distortion.fit_distortion"),
+        tca_record=_empty("lens.tca", "tca.fit_tca"),
+        mtf_record=_empty("lens.mtf", "mtf"),
+        psf_record=_empty("lens.psf", "psf"),
+    )
+    assert html.startswith("<!doctype html>")
+
+
+def test_render_lens_report_error_budget_shows_not_measured_when_rms_absent():
+    # `distortion_record.residuals.get("overall_rms_px")` can be `None`
+    # (residuals is an empty dict for an early refusal); the error-budget
+    # table used to splice that straight in as the literal text "None".
+    a = Analysis(result={"ptlens": {"a": 0.0, "b": 0.0, "c": 0.0}})  # residuals stay empty
+    record = Record.from_analysis(
+        kind="lens.distortion", device=_device(), analysis=a, provenance="measured", method={"name": "x"}
+    )
+    html = R.render_lens_report(device=_device(), distortion_record=record)
+    assert "not measured" in html
+    assert ">None<" not in html

@@ -42,6 +42,20 @@ def test_line_chart_empty_series_still_valid_xml():
     _parse(svg.line_chart([]))
 
 
+def test_line_chart_drops_none_points_instead_of_raising():
+    # min()/max() over a list containing None raises TypeError the moment
+    # Python tries to compare it against a real number -- a None point (an
+    # optional per-sample value a partial/refused record doesn't have for
+    # every sample) must be dropped, not passed through to axis-bounds math.
+    s = svg.line_chart([{"name": "s", "x": [1, 2, 3, 4], "y": [1.0, None, 3.0, None]}])
+    _parse(s)
+    assert "<path" in s or "<circle" in s
+
+
+def test_line_chart_all_none_points_is_the_empty_chart_not_a_crash():
+    _parse(svg.line_chart([{"name": "s", "x": [1, 2], "y": [None, None]}]))
+
+
 def test_scatter_chart_is_valid_xml_and_uses_circles():
     s = svg.scatter_chart([{"name": "pts", "x": [1, 2, 3], "y": [4, 5, 6]}])
     root = _parse(s)
@@ -85,6 +99,15 @@ def test_bar_chart_is_valid_xml():
 
 def test_bar_chart_empty_returns_empty_string():
     assert svg.bar_chart([]) == ""
+
+
+def test_bar_chart_none_value_renders_not_measured_instead_of_raising():
+    # float(None) raises TypeError -- a None value (mean/p95/max ΔE00 that
+    # a validation refused before computing) must render as a zero-length
+    # "not measured" bar, not crash the whole report.
+    s = svg.bar_chart([("mean ΔE00", 1.0), ("p95 ΔE00", None)])
+    _parse(s)
+    assert "not measured" in s
 
 
 def test_escaping_of_untrusted_text():

@@ -86,10 +86,16 @@ def build_sections(
         sections.append({"heading": "Primaries and white vs. EDID", "html": table + diagram})
 
     if additivity_analysis is not None:
-        de00 = additivity_analysis.result.get("additivity_de00")
-        threshold = additivity_analysis.result.get("threshold_de00")
-        verdict = "recommends a LUT profile" if additivity_analysis.result.get("recommend_lut") else "additive enough for a matrix/TRC profile"
-        html = f"<p>Measured white vs. black-corrected R+G+B: ΔE00 = {de00:.3f} (threshold {threshold}) &mdash; {verdict}.</p>"
+        de00 = reporthtml.optional_number(additivity_analysis.result.get("additivity_de00"))
+        threshold = reporthtml.optional_number(additivity_analysis.result.get("threshold_de00"))
+        recommend_lut = additivity_analysis.result.get("recommend_lut")
+        if recommend_lut is None:
+            verdict = "not evaluated"
+        elif recommend_lut:
+            verdict = "recommends a LUT profile"
+        else:
+            verdict = "additive enough for a matrix/TRC profile"
+        html = f"<p>Measured white vs. black-corrected R+G+B: ΔE00 = {de00} (threshold {threshold}) &mdash; {verdict}.</p>"
         sections.append({"heading": "Additivity (measured W vs. R+G+B)", "html": html})
 
     if uniformity_analysis is not None:
@@ -99,30 +105,44 @@ def build_sections(
 
     if warmup_analysis is not None:
         stable = warmup_analysis.result.get("stable_time_s")
-        note = f"<p>Stable within {warmup_analysis.result.get('stable_fraction_threshold', 0):.0%} of final luminance after {stable:.0f}s.</p>" if stable is not None else "<p>Luminance did not stabilize within the measured series.</p>"
+        if stable is not None:
+            fraction = reporthtml.optional_number(warmup_analysis.result.get("stable_fraction_threshold", 0.0), "{:.0%}")
+            note = f"<p>Stable within {fraction} of final luminance after {stable:.0f}s.</p>"
+        else:
+            note = "<p>Luminance did not stabilize within the measured series.</p>"
         sections.append({"heading": "Warm-up drift", "html": note})
 
     if pwm_analysis is not None:
         if pwm_analysis.result.get("detected"):
-            note = f"<p>PWM banding detected at {pwm_analysis.result['cycles_per_row']:.4f} cycles/row"
+            cycles = reporthtml.optional_number(pwm_analysis.result.get("cycles_per_row"), "{:.4f}")
+            note = f"<p>PWM banding detected at {cycles} cycles/row"
             hz = pwm_analysis.result.get("frequency_hz")
-            note += f" ({hz:.1f} Hz).</p>" if hz else " (no readout time given, so no Hz figure).</p>"
+            note += f" ({hz:.1f} Hz).</p>" if hz is not None else " (no readout time given, so no Hz figure).</p>"
         else:
             note = "<p>No PWM banding detected.</p>"
         sections.append({"heading": "Rolling-shutter PWM banding", "html": note})
 
     if validation_analysis is not None:
         r = validation_analysis.result
-        bars = svg.bar_chart(
-            [("mean ΔE00", r.get("de00_mean", 0.0)), ("p95 ΔE00", r.get("de00_p95", 0.0)), ("max ΔE00", r.get("de00_max", 0.0))]
-        )
-        sections.append({"heading": "Validation", "html": bars})
+        # A validation that refused before computing anything (e.g. a
+        # measured/target-count mismatch) has an *empty* result -- shown as
+        # an explicit "not measured" paragraph rather than a bar chart with
+        # a suspiciously perfect zero for a DeltaE00 that was never computed.
+        de00_keys = ("de00_mean", "de00_p95", "de00_max")
+        if any(r.get(k) is None for k in de00_keys):
+            sections.append(
+                {"heading": "Validation", "html": "<p>ΔE00 not measured (the validation step did not complete).</p>"}
+            )
+        else:
+            bars = svg.bar_chart([("mean ΔE00", r["de00_mean"]), ("p95 ΔE00", r["de00_p95"]), ("max ΔE00", r["de00_max"])])
+            sections.append({"heading": "Validation", "html": bars})
 
     if backend_accuracy is not None:
         cross = backend_accuracy.get("cross_checked_against") or "none"
+        de00_estimate = reporthtml.optional_number(backend_accuracy.get("de00_estimate"))
         html = (
             f"<p>{backend_accuracy.get('basis', '')} &mdash; ΔE00 estimate "
-            f"{backend_accuracy.get('de00_estimate')}; cross-checked against: {cross}.</p>"
+            f"{de00_estimate}; cross-checked against: {cross}.</p>"
         )
         sections.append({"heading": "Backend accuracy statement", "html": html})
 

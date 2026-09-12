@@ -68,3 +68,44 @@ def test_report_shows_refusal_box_for_refused_record():
     html = report.render_sensor_report(device={"kind": "camera", "model": "Canon EOS R100", "id": "x"}, darks_record=darks_record)
     assert "Refused" in html
     assert "too many clipped pixels" in html
+
+
+def test_report_with_empty_result_dicts_does_not_raise():
+    # Regression guard: every section here is *present* (a record was
+    # supplied) but carries an empty `.result` -- the shape a refusal that
+    # returned before computing anything (or an older/partial record)
+    # actually has. A bare f-string format spec on an absent value used to
+    # raise TypeError; report.html.optional_number is what every numeric
+    # field in this report now goes through instead.
+    device = {"kind": "camera", "model": "Canon EOS R100", "id": "x"}
+    html = report.render_sensor_report(
+        device=device,
+        bias_record=_record("camera.bias", {}),
+        ptc_record=_record("camera.ptc", {}),
+        linearity_record=_record("camera.linearity", {}),
+        darks_record=_record("camera.darks", {}),
+        iso_record=_record("camera.iso", {}),
+        shutter_record=_record("camera.shutter", {}),
+    )
+    assert html.startswith("<!doctype html>")
+
+
+def test_report_with_refused_ptc_record_does_not_raise():
+    a = Analysis()
+    a.refuse("too_few_levels", "not enough usable levels")
+    ptc_record = _record("camera.ptc", {}, status="refused", refusals=[r.to_dict() for r in a.refusals])
+    html = report.render_sensor_report(device={"kind": "camera", "model": "Canon EOS R100", "id": "x"}, ptc_record=ptc_record)
+    assert "Refused" in html
+    assert "not enough usable levels" in html
+
+
+def test_report_survives_a_malformed_empty_fit_dict():
+    # An empty `fit` dict (a hand-built or future-schema record missing
+    # its own numeric keys) is treated the same as "no fit for this
+    # channel" -- `_ptc_section` skips it (an empty dict is falsy) and
+    # `_error_budget` used to reach straight for `fit["gain_e_per_dn"]`
+    # with no None/missing-key guard at all, raising KeyError instead of
+    # just contributing nothing to the error-budget table.
+    ptc_record = _record("camera.ptc", {"channels": {"R": {"fit": {}}}})
+    html = report.render_sensor_report(device={"kind": "camera", "model": "Canon EOS R100", "id": "x"}, ptc_record=ptc_record)
+    assert html.startswith("<!doctype html>")
