@@ -127,3 +127,96 @@ def test_read_metadata_falls_back_to_empty_when_no_tool(tmp_path, monkeypatch):
     meta = raw._read_metadata(tmp_path / "whatever.cr3")
     assert meta.model == ""
     assert meta.iso is None
+
+
+def test_black_level_by_channel_matches_planes_names():
+    frame = _synthetic_frame()
+    by_channel = raw.black_level_by_channel(frame)
+    assert set(by_channel) == {"R", "G1", "G2", "B"}
+    # SensorModel gives one uniform black level across all 4 slots by
+    # construction (synth/sensor.py), so every channel should read it back
+    # identically regardless of margin phase.
+    for value in by_channel.values():
+        assert value == pytest.approx(frame.black_level[0])
+
+
+def test_black_level_by_channel_handles_odd_margin_phase_shift():
+    # top_margin=7 (odd) puts the visible tile's phase one row away from
+    # the absolute-origin tile black_level is indexed against -- this is
+    # exactly the case a plain "trust frame.pattern's raster order" mapping
+    # gets wrong; here every position gets a distinct value so a wrong
+    # mapping is very likely to be caught by strict equality below.
+    model = synth_sensor.SensorModel(shape=(32, 48), top_margin=7, left_margin=16)
+    rng = np.random.default_rng(3)
+    frame = synth_sensor.frame(model, exposure_s=0.01, flux_e_per_s=1000.0, temp_c=20.0, rng=rng)
+    frame = raw.RawFrame(
+        cfa=frame.cfa,
+        pattern=frame.pattern,
+        visible=frame.visible,
+        black_level=(500.0, 510.0, 520.0, 530.0),
+        white_level=frame.white_level,
+        meta=frame.meta,
+        path=frame.path,
+        sha256=frame.sha256,
+    )
+    by_channel = raw.black_level_by_channel(frame)
+    assert set(by_channel) == {"R", "G1", "G2", "B"}
+    assert set(by_channel.values()) == {500.0, 510.0, 520.0, 530.0}
+
+
+def test_save_npz_and_load_npz_round_trip(tmp_path):
+    frame = _synthetic_frame()
+    path = raw.save_npz(frame, tmp_path / "frame0.npz")
+    assert path.exists()
+
+    loaded = raw.load_npz(path)
+    assert np.array_equal(loaded.cfa, frame.cfa)
+    assert loaded.pattern == frame.pattern
+    assert loaded.visible == frame.visible
+    assert loaded.black_level == frame.black_level
+    assert loaded.white_level == frame.white_level
+    assert loaded.meta.model == frame.meta.model
+    assert loaded.meta.exposure_s == pytest.approx(frame.meta.exposure_s)
+    assert loaded.meta.sensor_temp_c == pytest.approx(frame.meta.sensor_temp_c)
+    assert loaded.path == str(path)
+    assert loaded.sha256 == raw.sha256_file(path)
+
+    # raw.load() dispatches to load_npz for a .npz path -- the whole point
+    # is that every ``--from DIR`` consumer can treat this like a real raw.
+    via_load = raw.load(path)
+    assert np.array_equal(via_load.cfa, frame.cfa)
+
+
+def test_save_npz_round_trips_frame_meta_settings(tmp_path):
+    meta = raw.FrameMeta(
+        model="calsuite-synthetic",
+        serial="abc123",
+        firmware="1.2.3",
+        lens="RF 50mm",
+        focal=50.0,
+        aperture=1.8,
+        exposure_s=0.01,
+        iso=800,
+        timestamp="2026:05:21 09:23:18",
+        sensor_temp_c=21.5,
+        settings={"long_exposure_nr": "Off", "high_iso_nr": None},
+    )
+    frame = raw.RawFrame(
+        cfa=np.zeros((8, 8), dtype=np.uint16),
+        pattern="RGGB",
+        visible=(slice(0, 8), slice(0, 8)),
+        black_level=(512.0, 512.0, 512.0, 512.0),
+        white_level=16383.0,
+        meta=meta,
+        path="<synthetic>",
+        sha256="",
+    )
+    path = raw.save_npz(frame, tmp_path / "meta.npz")
+    loaded = raw.load_npz(path)
+    assert loaded.meta == meta
+
+
+def test_save_npz_requires_npz_suffix(tmp_path):
+    frame = _synthetic_frame()
+    with pytest.raises(ValueError):
+        raw.save_npz(frame, tmp_path / "frame0.raw")

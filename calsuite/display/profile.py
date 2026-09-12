@@ -11,7 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-import colour
 import numpy as np
 
 from calsuite import tools
@@ -154,6 +153,8 @@ def build_fallback_matrix_trc(
     since those are always expressed in the PCS's own D50 space regardless
     of the device's native white point.
     """
+    import colour
+
     black = np.asarray(primaries_measured["k"], dtype=np.float64)
     r = np.asarray(primaries_measured["r"], dtype=np.float64) - black
     g = np.asarray(primaries_measured["g"], dtype=np.float64) - black

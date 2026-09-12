@@ -68,6 +68,15 @@ def test_heatmap_respects_explicit_value_range():
     assert s1 != s2  # different ranges must produce different fills
 
 
+def test_heatmap_tolerates_none_cells():
+    # lens.mtf_field_grid's map carries None for a field-grid cell whose
+    # own edge check failed -- heatmap() must render those as a flat "no
+    # data" cell, not crash comparing None against a number.
+    s = svg.heatmap([[0.5, None, 1.5], [None, None, None]])
+    _parse(s)
+    assert "no data" in s
+
+
 def test_bar_chart_is_valid_xml():
     s = svg.bar_chart([("gain", 2.5), ("read noise", 3.0, "3.0 e-")])
     _parse(s)

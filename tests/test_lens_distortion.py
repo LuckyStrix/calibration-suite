@@ -58,6 +58,22 @@ def test_coverage_refusal_fires_when_only_center_is_covered():
     assert any(r.check == "coverage" for r in analysis.refusals)
 
 
+def test_coverage_normalizes_radius_per_angle_not_by_the_half_diagonal():
+    # A corner sitting exactly at the frame's own edge midpoint -- as close
+    # to "the edge of the field" as any point can physically be, in that
+    # direction -- must count as reaching the outer ring. Normalizing by
+    # the fixed half-diagonal (only reached exactly at the image's 4
+    # corners) made every cardinal-direction edge midpoint structurally
+    # unreachable at any realistic outer-ring threshold, for any
+    # rectangular (or square) frame, no matter how good real coverage was.
+    width, height = IMAGE_SIZE
+    cx = (width - 1) / 2.0
+    top_center = np.array([[cx, 0.0]])
+    view = BoardView(corners=top_center, ids=np.array([0]), name="edge")
+    grid = D.coverage_grid([view], IMAGE_SIZE)
+    assert grid[-1].sum() == 1  # lands in the outermost radial bin
+
+
 def test_coverage_refusal_does_not_fire_for_a_deliberately_full_grid():
     """Sanity check that the coverage check isn't vacuously always-true:
     corners placed directly (bypassing perspective geometry) across every

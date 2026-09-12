@@ -19,7 +19,6 @@ ForwardMatrix convention when exporting.
 from __future__ import annotations
 
 import numpy as np
-from scipy.optimize import least_squares
 
 from calsuite.camera import chart
 from calsuite.camera import color_constants as cc
@@ -46,23 +45,24 @@ def _design_matrix(rgb: np.ndarray, model: str) -> np.ndarray:
 
 
 def black_subtracted_rgb(chart_sample: chart.ChartSample, patch_indices=None) -> np.ndarray:
-    """Per-patch camera-native RGB, black level subtracted, G = mean(G1, G2)
-    (the display-agent contract's stated convention). ``black_level`` is
-    ``raw.RawFrame.black_level``'s 4 positional values with no per-plane-name
-    mapping available from the foundation (same limitation noted in
-    ``chart.refusals_for_fit``); a plain mean across all 4 stands in as a
-    single scalar black level. ``patch_indices`` restricts to a subset (used
-    for held-out/leave-one-out splits); default is every patch in
-    ``chart_sample``.
+    """Per-patch camera-native RGB, black level subtracted per channel, G =
+    mean(G1, G2) (the display-agent contract's stated convention). Each of
+    R/G1/G2/B is subtracted with its *own* black level
+    (``chart_sample.black_level_by_channel``, from
+    ``raw.black_level_by_channel`` -- see that function's docstring for why
+    a single mean(black_level) scalar is wrong on a sensor with a
+    genuinely different black level per channel), not a scalar mean across
+    all 4. ``patch_indices`` restricts to a subset (used for held-out/
+    leave-one-out splits); default is every patch in ``chart_sample``.
     """
     idx = range(len(chart_sample.patches)) if patch_indices is None else patch_indices
-    black = float(np.mean(chart_sample.black_level))
+    black = chart_sample.black_level_by_channel or {ch: float(np.mean(chart_sample.black_level)) for ch in chart.CHANNELS}
     rows = []
     for i in idx:
         p = chart_sample.patches[i]
-        r = p.mean["R"] - black
-        g = 0.5 * (p.mean["G1"] + p.mean["G2"]) - black
-        b = p.mean["B"] - black
+        r = p.mean["R"] - black["R"]
+        g = 0.5 * ((p.mean["G1"] - black["G1"]) + (p.mean["G2"] - black["G2"]))
+        b = p.mean["B"] - black["B"]
         rows.append((r, g, b))
     return np.array(rows, dtype=np.float64)
 
@@ -104,6 +104,7 @@ def _refine_delta_e00(
     terms: np.ndarray, target_xyz: np.ndarray, weights: np.ndarray, illuminant_xy: tuple, M0: np.ndarray
 ) -> np.ndarray:
     import colour
+    from scipy.optimize import least_squares
 
     target_lab = colour.XYZ_to_Lab(target_xyz, illuminant=illuminant_xy)
     sw = np.sqrt(weights)
@@ -273,7 +274,14 @@ def fit(
     else:
         white_pos_in_fit = fit_idx.index(white_global) if (white_preserving and white_global in fit_idx) else -1
         de = _validate_leave_one_out(rgb_fit, target_fit, model, illuminant_xy, white_pos_in_fit)
-        validation_method = "leave_one_out"
+        # Named for what it actually validates, not just "leave one out":
+        # each fold's own matrix is the cheap linear (raw-XYZ-error) fit,
+        # not the full DeltaE00 nonlinear refinement the *reported* matrix
+        # gets (see _validate_leave_one_out's docstring for why) -- a
+        # slightly more conservative generalization estimate than a true
+        # "refit exactly like the real thing N times" would give, and the
+        # record should say so rather than imply the two used the same fit.
+        validation_method = "leave_one_out_linear_folds"
 
     mean_de, p95_de, max_de = float(np.mean(de)), float(np.percentile(de, 95)), float(np.max(de))
     validation_passed = (
@@ -281,6 +289,26 @@ def fit(
         and p95_de <= cc.VALIDATION_P95_DE00_MAX
         and max_de <= cc.VALIDATION_MAX_DE00_MAX
     )
+    if not validation_passed:
+        # House rule 2 / store.require_exportable: "measured" (the method
+        # -- a chart WAS photographed) is a different question from
+        # "trustworthy" (status). A fit whose own validation fails is not
+        # trustworthy regardless of which tier's checks it happened to
+        # clear, so it must be refused (status="refused"), not merely
+        # carry a quiet validation_passed=False buried in result -- the
+        # earlier version of this function left it exactly that quiet,
+        # which meant a chart that failed validation but triggered no
+        # *other* refusal still had status="ok" and would pass
+        # store.require_exportable().
+        analysis.refuse(
+            "validation_failed",
+            f"{validation_method} validation exceeds its DeltaE00 threshold: "
+            f"mean={mean_de:.3f} (max {cc.VALIDATION_MEAN_DE00_MAX}), "
+            f"p95={p95_de:.3f} (max {cc.VALIDATION_P95_DE00_MAX}), "
+            f"max={max_de:.3f} (max {cc.VALIDATION_MAX_DE00_MAX})",
+            value=round(mean_de, 4),
+            threshold=cc.VALIDATION_MEAN_DE00_MAX,
+        )
 
     fit_pred = predict_xyz(rgb_fit, model, M)
     fit_de = delta_e00(fit_pred, target_fit, illuminant_xy)

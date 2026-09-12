@@ -16,14 +16,27 @@ import argparse
 from pathlib import Path
 
 from calsuite import __version__, config, devices as devicesmod, raw as rawmod, store
-from calsuite.camera import bias, bulb, color_commands, darks, iso, linearity, ptc, report, settings, shutter
+from calsuite.camera import color_commands, settings
 from calsuite.capture import gphoto2, manual
+
+# NOTE: bias/ptc/linearity/darks/shutter/bulb/iso/report (each used by
+# exactly one `_cmd_*` below) are imported *inside* that function, not
+# here -- several transitively pull in scipy (ptc, darks, bulb), which
+# costs several hundred ms to import. `register()` (called for every
+# `calsuite ...` invocation, including `--help` and `doctor`, just to
+# build the argparse tree) has no need to pay that cost; only the specific
+# subcommand a user actually runs should. `color_commands` stays here
+# because `register()` itself calls `color_commands.register(...)` --
+# that module follows the same lazy-import rule internally.
 
 # -- shared helpers -----------------------------------------------------------
 
 
 def _load_frames(entries) -> list:
-    return [rawmod.load(e.path) for e in entries]
+    """The already-decoded frame from each ``ManifestEntry`` -- ``scan_folder``
+    paid for the decode once already (to classify it); no command needs to
+    pay for it again just to get the same ``RawFrame`` back."""
+    return [e.frame for e in entries]
 
 
 def _inputs(frames) -> list:
@@ -31,12 +44,14 @@ def _inputs(frames) -> list:
 
 
 def _black_dn(frames) -> dict:
-    """Per-channel black level, DN. Falls back to each frame's own metadata
-    black level (rawpy's ``black_level_per_channel``, averaged to a single
-    scalar -- see camera/bias.py's docstring on why a precise per-channel
-    mapping isn't attempted here) when no measured ``camera.bias`` record is
-    passed in; callers that have one should prefer it."""
-    return float(sum(frames[0].black_level) / len(frames[0].black_level)) if frames[0].black_level else 0.0
+    """Per-channel black level, DN, from the first frame's own metadata
+    (``raw.black_level_by_channel`` -- correctly named per channel, not a
+    scalar mean across all 4 positional values) when no measured
+    ``camera.bias`` record is passed in; callers that have one should
+    prefer it. Every downstream consumer (camera/ptc.py, linearity.py,
+    darks.py, shutter.py, bulb.py) already accepts either a float or a
+    ``{channel: float}`` dict here."""
+    return rawmod.black_level_by_channel(frames[0]) if frames[0].black_level else 0.0
 
 
 def _latest_ok(st: store.Store, kind: str, device_id: str):
@@ -75,25 +90,28 @@ def _save(
     conditions: dict,
     inputs: list,
     artifacts: dict | None = None,
+    provenance: str = "measured",
 ) -> int:
-    """Build and save a ``Record`` from an ``Analysis``, per the house rule
-    that a refused analysis is still saved (status "refused"), just not
-    with strong provenance.
+    """Build and save a ``Record`` from an ``Analysis``.
 
-    A refused record's provenance can't honestly be "measured" (house rule
-    2: that label is earned only by *passing* the refusal checks), but none
-    of the other three tiers (derived/vendor/nominal) describes "a fresh
-    measurement attempt that failed its own checks" either -- "nominal" is
-    used as the fallback because it's already the tier that means "don't
-    build anything on this number", which is exactly the guarantee
-    ``store.require_exportable`` needs regardless of which non-measured
-    label is picked.
+    Provenance policy (store.py's docstring; docs/implementation-plan.md
+    Wave 3 fix list item 2): provenance names the *method* a record was
+    produced by, not whether it turned out trustworthy. Every command that
+    calls this with a folder of freshly captured frames (bias/ptc/
+    linearity/darks/shutter/bulb) passes the default, "measured" --
+    regardless of ``analysis.ok`` -- because a real measurement attempt
+    *was* made; ``status`` (set below from ``analysis.ok``) is the
+    orthogonal axis that says whether it can be trusted, and it's `status`
+    that ``store.require_exportable`` actually gates on. ``_cmd_iso`` is
+    the one caller that overrides this to "derived": it computes from
+    existing ``camera.ptc``/``camera.linearity`` records, with no fresh
+    capture of its own.
     """
     record = store.Record.from_analysis(
         kind=kind,
         device=device_ref.to_dict(),
         analysis=analysis,
-        provenance="measured" if analysis.ok else "nominal",
+        provenance=provenance,
         method={"name": method_name, "calsuite_version": __version__, "params": {}},
         conditions=conditions,
         inputs=inputs,
@@ -142,6 +160,8 @@ def _resolve_from_dir(args) -> Path:
 
 
 def _cmd_bias(args) -> int:
+    from calsuite.camera import bias
+
     folder = _resolve_from_dir(args)
     manifest = manual.scan_folder(folder)
     entries = manifest.by_role("bias")
@@ -179,6 +199,8 @@ def _cmd_bias(args) -> int:
 
 
 def _cmd_ptc(args) -> int:
+    from calsuite.camera import ptc
+
     folder = _resolve_from_dir(args)
     manifest = manual.scan_folder(folder)
     entries = manifest.by_role("flat")
@@ -211,6 +233,8 @@ def _cmd_ptc(args) -> int:
 
 
 def _cmd_linearity(args) -> int:
+    from calsuite.camera import linearity
+
     folder = _resolve_from_dir(args)
     manifest = manual.scan_folder(folder)
     entries = manifest.by_role("flat")
@@ -242,6 +266,8 @@ def _cmd_linearity(args) -> int:
 
 
 def _cmd_darks(args) -> int:
+    from calsuite.camera import darks
+
     folder = _resolve_from_dir(args)
     manifest = manual.scan_folder(folder)
     entries = manifest.by_role("dark")
@@ -290,6 +316,8 @@ def _cmd_darks(args) -> int:
 
 
 def _cmd_shutter(args) -> int:
+    from calsuite.camera import shutter
+
     folder = _resolve_from_dir(args)
     manifest = manual.scan_folder(folder)
     entries = manifest.by_role("flat") + manifest.by_role("target")
@@ -319,6 +347,8 @@ def _cmd_shutter(args) -> int:
 
 
 def _cmd_bulb(args) -> int:
+    from calsuite.camera import bulb
+
     folder = _resolve_from_dir(args)
     manifest = manual.scan_folder(folder)
     entries = manifest.by_role("flat") + manifest.by_role("target")
@@ -353,6 +383,8 @@ def _cmd_bulb(args) -> int:
 
 
 def _cmd_iso(args) -> int:
+    from calsuite.camera import iso
+
     st = _store()
     ptc_records = [r for r in st.all(kind="camera.ptc", device_id=args.device_id) if r.status == "ok"]
     if not ptc_records:
@@ -398,6 +430,7 @@ def _cmd_iso(args) -> int:
         method_name="camera.iso",
         conditions={},
         inputs=[],
+        provenance="derived",  # computed from existing camera.ptc/camera.linearity records, no fresh capture
     )
 
 
@@ -405,6 +438,8 @@ def _cmd_iso(args) -> int:
 
 
 def _cmd_report(args) -> int:
+    from calsuite.camera import report
+
     st = _store()
     kinds = ("camera.bias", "camera.ptc", "camera.linearity", "camera.darks", "camera.iso", "camera.shutter")
     latest = {kind: st.latest(kind, args.device_id) for kind in kinds}

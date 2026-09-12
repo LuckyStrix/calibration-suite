@@ -102,7 +102,15 @@ def render(record, reference=None) -> str:
     if val_de:
         rows = sorted(val_de.items(), key=lambda kv: -kv[1])
         method = result.get("validation_method", "validation")
-        sections.append({"heading": f"DeltaE2000 on held-out patches ({method})", "html": report_svg.bar_chart(rows)})
+        heading = f"DeltaE2000 on held-out patches ({method})"
+        html = report_svg.bar_chart(rows)
+        if method == "leave_one_out_linear_folds":
+            html = (
+                "<p><em>Each fold below refits with a cheap linear (raw-XYZ-error) matrix, not the full "
+                "DeltaE2000-refined matrix reported above -- a faithful but slightly more conservative "
+                "generalization estimate, not an exact per-patch replay of the reported fit.</em></p>" + html
+            )
+        sections.append({"heading": heading, "html": html})
 
     if reference is not None and "matrix_raw_to_xyz" in result:
         illuminant_xy = tuple(result.get("illuminant_xy", (0.3127, 0.3290)))

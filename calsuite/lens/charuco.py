@@ -21,12 +21,15 @@ an implementation detail.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-import cv2.aruco as aruco
 import numpy as np
 
 from calsuite import raw as rawmod
 from calsuite.lens import constants as C
+
+if TYPE_CHECKING:
+    import cv2.aruco as aruco
 
 PLANE_NAMES = ("R", "G1", "G2", "B")
 
@@ -49,6 +52,8 @@ def build_board(square_length: float = 1.0) -> aruco.CharucoBoard:
     object points, not its layout, so detection code that doesn't care
     about physical units can leave it at the default 1.0.
     """
+    import cv2.aruco as aruco
+
     dictionary = aruco.getPredefinedDictionary(getattr(aruco, C.BOARD_DICT_NAME))
     marker_length = square_length * C.BOARD_MARKER_RATIO
     return aruco.CharucoBoard(
@@ -101,6 +106,8 @@ def to_8bit(plane: np.ndarray) -> np.ndarray:
 
 
 def _detect(img8: np.ndarray, board: aruco.CharucoBoard):
+    import cv2.aruco as aruco
+
     detector = aruco.CharucoDetector(board)
     corners, ids, _marker_corners, _marker_ids = detector.detectBoard(img8)
     if corners is None or ids is None or len(ids) == 0:

@@ -107,17 +107,24 @@ def test_glare_still_produces_a_best_effort_fit_but_refused():
 
 
 def test_record_provenance_reflects_validation(tmp_path):
+    # Policy (docs/implementation-plan.md Wave 3 fix list item 2, store.py's
+    # docstring): provenance names the *method* -- a chart WAS photographed,
+    # so this is "measured" -- regardless of whether validation passed;
+    # trustworthiness lives entirely in `status`. A command always uses
+    # provenance="measured" here; it's `status` that require_exportable
+    # actually gates on.
     ref = chart.reference_colorchecker()
     sample = _render_and_sample(ref)
     analysis = color.fit(sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name="D65", model="matrix")
+    assert analysis.ok
+    assert analysis.result["validation_passed"]
 
     device = {"kind": "camera", "model": "calsuite-synthetic", "id": "calsuite-synthetic-unknown"}
-    provenance = "measured" if (analysis.ok and analysis.result["validation_passed"]) else "derived"
     record = store.Record.from_analysis(
         kind="camera.color",
         device=device,
         analysis=analysis,
-        provenance=provenance,
+        provenance="measured",
         method={"name": "camera.color.fit", "calsuite_version": "0.1.0", "params": {}},
     )
     assert record.status == "ok"
@@ -129,3 +136,38 @@ def test_record_provenance_reflects_validation(tmp_path):
     loaded = st.load(path)
     assert loaded.result["matrix_raw_to_xyz"] == record.result["matrix_raw_to_xyz"]
     store.require_exportable(loaded)  # should not raise
+
+
+def test_failed_validation_refuses_even_with_no_other_quality_issue(monkeypatch):
+    # A chart with no glare/gradient/clipping issue can still fail
+    # validation (a genuinely bad fit, an unlucky noise draw, ...) -- that
+    # must refuse the record (status="refused"), not just set a quiet
+    # validation_passed=False that require_exportable() never looks at.
+    # Thresholds are monkeypatched to an impossible bar (>= 0 DeltaE00)
+    # rather than hunting for noise parameters that fail validation without
+    # tripping some *other* refusal first.
+    from calsuite.camera import color_constants as cc
+
+    monkeypatch.setattr(cc, "VALIDATION_MEAN_DE00_MAX", -1.0)
+    monkeypatch.setattr(cc, "VALIDATION_P95_DE00_MAX", -1.0)
+    monkeypatch.setattr(cc, "VALIDATION_MAX_DE00_MAX", -1.0)
+
+    ref = chart.reference_colorchecker()
+    sample = _render_and_sample(ref)
+    analysis = color.fit(sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name="D65", model="matrix")
+
+    assert not analysis.ok
+    assert any(r.check == "validation_failed" for r in analysis.refusals)
+    assert analysis.result["validation_method"] == "leave_one_out_linear_folds"
+    assert not analysis.result["validation_passed"]
+
+    record = store.Record.from_analysis(
+        kind="camera.color",
+        device={"kind": "camera", "model": "calsuite-synthetic", "id": "calsuite-synthetic-unknown"},
+        analysis=analysis,
+        provenance="measured",  # method-based: a chart was still photographed
+        method={"name": "camera.color.fit", "calsuite_version": "0.1.0", "params": {}},
+    )
+    assert record.status == "refused"
+    with pytest.raises(store.ExportRefused):
+        store.require_exportable(record)

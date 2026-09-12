@@ -74,7 +74,14 @@ def analyze_bias(frames: list) -> Analysis:
     ob_means = _channel_means(frames, "optical_black")
     vis_means = _channel_means(frames, "visible")
 
-    metadata_black = float(np.mean(frames[0].black_level)) if frames[0].black_level else None
+    # Per-channel, not a single mean(black_level) scalar -- some sensors
+    # read a genuinely different black level on G1 vs G2 (different
+    # amplifier chains), and raw.black_level_by_channel() is what maps
+    # RawFrame.black_level's 4 positional values to "R"/"G1"/"G2"/"B"
+    # correctly (accounting for margin phase), so the metadata comparison
+    # below is apples-to-apples per channel rather than diluted by an
+    # across-channel average.
+    metadata_black_by_ch = rawmod.black_level_by_channel(frames[0]) if frames[0].black_level else None
 
     black_level_dn = {}
     black_level_optical_black_dn = {}
@@ -86,8 +93,8 @@ def analyze_bias(frames: list) -> Analysis:
         black_level_optical_black_dn[ch] = ob
         black_level_visible_dn[ch] = vis
         black_level_dn[ch] = 0.5 * (ob + vis)
-        if metadata_black is not None:
-            black_level_discrepancy_dn[ch] = black_level_dn[ch] - metadata_black
+        if metadata_black_by_ch is not None:
+            black_level_discrepancy_dn[ch] = black_level_dn[ch] - metadata_black_by_ch[ch]
 
     # Read noise: pair up frames (0,1), (2,3), ... -- non-overlapping pairs
     # so no frame contributes to more than one difference, keeping the
@@ -109,7 +116,7 @@ def analyze_bias(frames: list) -> Analysis:
         "black_level_dn": black_level_dn,
         "black_level_optical_black_dn": black_level_optical_black_dn,
         "black_level_visible_dn": black_level_visible_dn,
-        "black_level_metadata_dn": metadata_black,
+        "black_level_metadata_dn": metadata_black_by_ch,
         "black_level_discrepancy_dn": black_level_discrepancy_dn,
         "black_level_metadata_discrepancy_threshold_dn": BLACK_LEVEL_METADATA_DISCREPANCY_DN,
         "read_noise_dn": read_noise_dn,

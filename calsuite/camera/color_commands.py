@@ -14,11 +14,15 @@ from __future__ import annotations
 import numpy as np
 
 from calsuite import __version__, config, devices, raw as rawmod, store
-from calsuite.camera import chart, color, color_report
-from calsuite.camera import dcp as dcpmod
-from calsuite.camera import ssf as ssfmod
-from calsuite.capture import manual
-from calsuite.formats import icc as iccmod
+from calsuite.camera import color
+
+# `color` stays imported here (unlike chart/color_report/dcp/ssf/manual/icc,
+# each deferred into the one function that actually uses it) because
+# `_add_fit`/`_add_spectral` -- called by `register()` -- need
+# `color.MODELS` right now, to build the `--model` argument's `choices=`.
+# That's fine: `color.py`'s own heavy dependency (scipy.optimize) is
+# itself deferred inside the one function that needs it, so importing
+# `color` here costs next to nothing.
 
 
 def register(camera_subparsers) -> None:
@@ -71,22 +75,28 @@ def _add_fit(sub) -> None:
 
 
 def _load_target_frame(args):
+    from calsuite.capture import manual
+
     if args.raw_file:
         return rawmod.load(args.raw_file)
     manifest = manual.scan_folder(args.from_dir)
     targets = manifest.by_role("target")
     if not targets:
         raise SystemExit(f"no 'target'-classified frame found under {args.from_dir}")
-    return rawmod.load(targets[0].path)
+    return targets[0].frame  # already decoded by scan_folder -- no need to load() it a second time
 
 
 def _load_reference(args):
+    from calsuite.camera import chart
+
     if args.reference:
         return chart.reference_from_csv(args.reference)
     return chart.reference_colorchecker()
 
 
 def _cmd_fit(args) -> int:
+    from calsuite.camera import chart
+
     frame = _load_target_frame(args)
     reference = _load_reference(args)
     rows = args.rows or reference.rows
@@ -108,14 +118,18 @@ def _cmd_fit(args) -> int:
         held_out_names=held_out,
     )
 
-    validated = bool(analysis.result.get("validation_passed"))
-    provenance = "measured" if (analysis.ok and validated) else "derived"
-
+    # Provenance policy (store.py's docstring; docs/implementation-plan.md
+    # Wave 3 fix list item 2): provenance names the *method* -- a chart WAS
+    # photographed here, so this is always "measured", whether or not the
+    # fit's own refusal/validation checks passed. `status` (set by
+    # Record.from_analysis from analysis.ok, which color.fit() now sets to
+    # False on a failed validation too) is what actually gates
+    # store.require_exportable() -- not a second axis on provenance.
     record = store.Record.from_analysis(
         kind="camera.color",
         device=devices.camera_ref(frame.meta).to_dict(),
         analysis=analysis,
-        provenance=provenance,
+        provenance="measured",
         method={
             "name": "camera.color.fit",
             "calsuite_version": __version__,
@@ -150,6 +164,8 @@ def _add_spectral(sub) -> None:
 
 
 def _cmd_spectral(args) -> int:
+    from calsuite.camera import ssf as ssfmod
+
     ssf_obj = ssfmod.load_ssf_csv(args.ssf)
     illuminant_xy = _illuminant_xy(args.illuminant)
 
@@ -204,6 +220,8 @@ def _add_export(sub) -> None:
 
 
 def _matrices_for_record(record) -> tuple:
+    from calsuite.camera import dcp as dcpmod
+
     matrix = np.array(record.result["matrix_raw_to_xyz"], dtype=np.float64)
     raw_white = record.result.get("white_patch_raw_rgb")
     if raw_white is None:
@@ -215,6 +233,9 @@ def _matrices_for_record(record) -> tuple:
 
 
 def _cmd_export(args) -> int:
+    from calsuite.camera import dcp as dcpmod
+    from calsuite.formats import icc as iccmod
+
     st = store.Store(config.records_dir())
     record = st.load(args.record)
     store.require_exportable(record)
@@ -267,6 +288,8 @@ def _add_report(sub) -> None:
 
 
 def _cmd_report(args) -> int:
+    from calsuite.camera import chart, color_report
+
     st = store.Store(config.records_dir())
     record = st.load(args.record)
     reference = None

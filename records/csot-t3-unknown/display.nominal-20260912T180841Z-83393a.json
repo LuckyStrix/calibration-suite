@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "id": "display.nominal-20260912T180841Z-83393a",
+  "kind": "display.nominal",
+  "device": {
+    "kind": "display",
+    "model": "CSOT T3",
+    "id": "csot-t3-unknown",
+    "firmware": ""
+  },
+  "devices": [],
+  "created": "20260912T180841Z",
+  "provenance": "nominal",
+  "status": "ok",
+  "refusals": [],
+  "conditions": {},
+  "method": {
+    "name": "calsuite.display.commands",
+    "calsuite_version": "0.1.0",
+    "params": {
+      "connector": "card0-eDP-1"
+    }
+  },
+  "inputs": [],
+  "derived_from": [],
+  "result": {
+    "chromaticity": {
+      "r": [
+        0.6376953125,
+        0.333984375
+      ],
+      "g": [
+        0.2998046875,
+        0.595703125
+      ],
+      "b": [
+        0.140625,
+        0.0576171875
+      ],
+      "w": [
+        0.3125,
+        0.3291015625
+      ]
+    },
+    "physical_size_mm": [
+      344.0,
+      215.0
+    ],
+    "gamma": 2.2,
+    "name": "CSOT T3",
+    "edid_hash": "bbe3f92961d17fd3d297b18c3b282a2cb42687150d24b147ffd2969813e7707c"
+  },
+  "residuals": {},
+  "uncertainty": {},
+  "artifacts": []
+}

@@ -12,7 +12,6 @@ import csv
 from dataclasses import dataclass
 from pathlib import Path
 
-import colour
 import numpy as np
 
 from calsuite.display.backends.base import Accuracy, Measurement
@@ -48,6 +47,8 @@ def spectrum_to_xyz(wavelengths, values) -> np.ndarray:
     spectrophotometer's native sampling rarely matches the CMF grid
     exactly.
     """
+    import colour
+
     cmfs = colour.MSDS_CMFS[_CMFS_NAME]
     grid = cmfs.wavelengths
     spd = np.interp(grid, wavelengths, values, left=0.0, right=0.0)

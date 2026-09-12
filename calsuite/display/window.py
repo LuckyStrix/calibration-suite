@@ -12,11 +12,29 @@ Testable headless via ``SDL_VIDEODRIVER=dummy``, set on the environment
 
 from __future__ import annotations
 
+import os
 import time as _time
 
-import pygame
-
 from calsuite.display import constants as dc
+
+# ``pygame`` itself is imported lazily, inside ``open_window`` below (the
+# one function every caller in this module calls before any other,
+# per its own pygame.init() sequencing requirement) -- importing it is
+# slow and, without this, prints pygame's own "Hello from the pygame
+# community" banner on every `import calsuite.display.window`, which
+# includes commands that never touch a real window at all (`--help`,
+# `doctor`, any non-display command). ``global pygame`` in ``open_window``
+# binds the module into this file's namespace exactly once, after which
+# every other function below (``close_window``, ``show_patch``, ...) can
+# keep referring to the bare name ``pygame`` as if it had been imported at
+# the top, because by the time any of them runs, ``open_window`` already
+# has. Type annotations referencing ``pygame.Surface`` are fine unimported
+# -- ``from __future__ import annotations`` (above) makes every annotation
+# in this file a lazily-evaluated string, never touched at import time.
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+# Must be set before pygame is ever imported (it reads this once, on
+# import) -- the banner it silences is unconditional otherwise, harmless
+# but noisy on every `calsuite display ...`/`calsuite demo` run.
 
 
 class WindowAborted(RuntimeError):
@@ -32,6 +50,9 @@ def open_window(width: int | None = None, height: int | None = None, *, fullscre
     Tests under ``SDL_VIDEODRIVER=dummy`` should always pass both
     explicitly -- the dummy driver's desktop-size query is not meaningful.
     """
+    global pygame
+    import pygame
+
     pygame.init()
     pygame.mouse.set_visible(False)
     flags = pygame.FULLSCREEN if fullscreen else 0

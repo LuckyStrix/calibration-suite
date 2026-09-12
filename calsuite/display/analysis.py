@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import numpy as np
 
-import colour
-
 from calsuite.display import constants as dc
 from calsuite.fit import Analysis
 
@@ -30,6 +28,8 @@ def xyz_to_lab(xyz, white_xyz) -> np.ndarray:
     made on the same display in the same session, so the display's own
     measured white is the right reference, not a canonical illuminant.
     """
+    import colour
+
     white_xyz = np.asarray(white_xyz, dtype=np.float64)
     y_white = white_xyz[1]
     xyz_n = np.asarray(xyz, dtype=np.float64) / y_white
@@ -38,6 +38,8 @@ def xyz_to_lab(xyz, white_xyz) -> np.ndarray:
 
 
 def delta_e00(lab1, lab2) -> float:
+    import colour
+
     return float(colour.delta_E(np.asarray(lab1, dtype=np.float64), np.asarray(lab2, dtype=np.float64)))
 
 
@@ -163,6 +165,8 @@ def primaries_vs_edid(measured: dict, edid_chromaticity: dict) -> Analysis:
     point column describes (the color the eye/instrument sees at full
     white, black leakage included).
     """
+    import colour
+
     analysis = Analysis()
     black = np.asarray(measured["k"], dtype=np.float64)
     measured_xy = {}

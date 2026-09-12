@@ -54,7 +54,8 @@ def test_read_noise_electrons_within_design_budget():
 def test_metadata_black_level_comparison_present():
     frames = _bias_frames(black_dn=500.0)
     a = bias.analyze_bias(frames)
-    assert a.result["black_level_metadata_dn"] == pytest.approx(500.0)
+    for _ch, value in a.result["black_level_metadata_dn"].items():
+        assert value == pytest.approx(500.0)
     for _ch, discrepancy in a.result["black_level_discrepancy_dn"].items():
         assert abs(discrepancy) < 5.0
 

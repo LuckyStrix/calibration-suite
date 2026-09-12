@@ -23,10 +23,9 @@ physical card's outer border.
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-import cv2
 import numpy as np
 
 from calsuite import raw as rawmod
@@ -219,15 +218,25 @@ class ChartSample:
     cols: int
     patches: list  # list[PatchSample], row-major -- index i matches ReferenceChart.patches[i]
     corners: list  # the 4 (x, y) corners as given
-    black_level: tuple  # frame.black_level, carried through so color.py can black-subtract
+    black_level: tuple  # frame.black_level, carried through for reference/debugging
     white_level: float
     source_path: str = ""
+    black_level_by_channel: dict = field(default_factory=dict)
+    # {"R":, "G1":, "G2":, "B":} -- from raw.black_level_by_channel(frame) at
+    # sample_chart() time (the only place a RawFrame, and hence its pattern/
+    # visible-origin, is still available). Everything downstream that needs
+    # to black-subtract a patch (color.black_subtracted_rgb, this module's
+    # own uneven-lighting check below) should use this, not a plain
+    # mean(black_level) scalar -- see raw.black_level_by_channel's docstring
+    # for why a scalar mean is wrong on a sensor with per-channel black.
 
 
 def homography_from_corners(corners: list, rows: int, cols: int) -> np.ndarray:
     """4 (x, y) pixel corners (TL, TR, BR, BL patch *centers*) -> the 3x3
     homography mapping grid index (col, row) in [0, cols-1] x [0, rows-1] to
     that pixel space."""
+    import cv2
+
     src = np.array([[0, 0], [cols - 1, 0], [cols - 1, rows - 1], [0, rows - 1]], dtype=np.float32)
     dst = np.array(corners, dtype=np.float32)
     return cv2.getPerspectiveTransform(src, dst)
@@ -235,6 +244,8 @@ def homography_from_corners(corners: list, rows: int, cols: int) -> np.ndarray:
 
 def apply_homography(h: np.ndarray, points: np.ndarray) -> np.ndarray:
     """``points``: (N, 2) grid coords -> (N, 2) pixel coords."""
+    import cv2
+
     pts = points.reshape(-1, 1, 2).astype(np.float64)
     out = cv2.perspectiveTransform(pts, h)
     return out.reshape(-1, 2)
@@ -245,6 +256,8 @@ def _sample_region(plane: np.ndarray, quad_xy: np.ndarray, white_level: float) -
     quarter-resolution frame) into ``plane`` and return
     ``(mean, std, clipped_fraction, n_px)``. Returns zeros/NaN-safe values
     (0 px) if the quad falls entirely outside the plane."""
+    import cv2
+
     x0 = int(np.floor(quad_xy[:, 0].min()))
     x1 = int(np.ceil(quad_xy[:, 0].max())) + 1
     y0 = int(np.floor(quad_xy[:, 1].min()))
@@ -324,6 +337,7 @@ def sample_chart(
         black_level=tuple(frame.black_level),
         white_level=float(frame.white_level),
         source_path=frame.path,
+        black_level_by_channel=rawmod.black_level_by_channel(frame),
     )
 
 
@@ -357,6 +371,7 @@ def label_patches(chart_sample: ChartSample, reference: ReferenceChart) -> Chart
         black_level=chart_sample.black_level,
         white_level=chart_sample.white_level,
         source_path=chart_sample.source_path,
+        black_level_by_channel=chart_sample.black_level_by_channel,
     )
 
 
@@ -408,19 +423,19 @@ def refusals_for_fit(chart_sample: ChartSample, reference: ReferenceChart, model
 
     # -- uneven lighting: neutral-patch response vs. reference vs. position -
     if len(neutral_idx) >= 3:
-        # frame.black_level's 4 entries are positional (one per raw-pattern
-        # tile slot), not named "R"/"G1"/"G2"/"B" -- raw.py exposes no
-        # per-name mapping for it, so a plain mean across all 4 is used as a
-        # single scalar black estimate here. Good enough for a *ratio*-based
-        # gradient check (a few DN of black-level error is negligible next
-        # to a mid-gray patch's signal), not precise enough for the actual
-        # matrix fit, which black-subtracts per plane properly (color.py).
-        black = float(np.mean(chart_sample.black_level))
+        # Per-channel black (raw.black_level_by_channel, via
+        # chart_sample.black_level_by_channel) -- G1 and G2 subtracted with
+        # their own black level rather than a single mean(black_level)
+        # scalar across all 4 channels, which is wrong on a sensor with a
+        # genuinely different black level per channel (see that helper's
+        # docstring).
+        black_g1 = chart_sample.black_level_by_channel.get("G1", float(np.mean(chart_sample.black_level)))
+        black_g2 = chart_sample.black_level_by_channel.get("G2", float(np.mean(chart_sample.black_level)))
         rows_, cols_, ratios = [], [], []
         for i in neutral_idx:
             p = chart_sample.patches[i]
             ref_y = reference.patches[i].XYZ[1]
-            g_mean = 0.5 * (p.mean["G1"] + p.mean["G2"]) - black
+            g_mean = 0.5 * ((p.mean["G1"] - black_g1) + (p.mean["G2"] - black_g2))
             if ref_y <= 0 or g_mean <= 0:
                 continue
             rows_.append(p.row)

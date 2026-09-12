@@ -22,10 +22,19 @@ import sys
 from pathlib import Path
 
 from calsuite import config, devices as devicesmod, raw as rawmod, store
-from calsuite.lens import charuco, distortion as distortionmod, export_lensfun, flats as flatsmod, mtf as mtfmod, psf as psfmod, report as reportmod, tca as tcamod
 from calsuite.lens.constants import DISPLAY_SQUARE_MM
 
-_RAW_EXTENSIONS = {".cr3", ".CR3", ".dng", ".DNG", ".nef", ".NEF"}
+# charuco/distortion/tca/flats/mtf/psf/export_lensfun/report are each
+# imported locally, inside the one `_cmd_*` function that uses them --
+# charuco and distortion pull in cv2 (a few hundred ms), and `register()`
+# (called for every `calsuite ...` invocation, `--help`/`doctor` included)
+# has no need to pay that cost just to build the argparse tree.
+
+_RAW_EXTENSIONS = {".cr3", ".CR3", ".dng", ".DNG", ".nef", ".NEF"} | rawmod.NPZ_EXTENSIONS
+# .npz (raw.save_npz's format) alongside real raw extensions -- lets a
+# synthetic session (no camera attached) exercise this module's CLI
+# commands exactly like a real folder of captures (docs/implementation-plan.md
+# Wave 3 fix list item 4).
 
 
 def _load_raw_folder(folder: Path) -> list:
@@ -59,6 +68,8 @@ def _store() -> store.Store:
 
 
 def _cmd_distortion(args) -> int:
+    from calsuite.lens import charuco, distortion as distortionmod
+
     frames = _load_raw_folder(args.from_dir)
     if len(frames) < 2:
         print(f"need at least 2 raw files under {args.from_dir}, found {len(frames)}")
@@ -107,6 +118,8 @@ def _cmd_distortion(args) -> int:
 
 
 def _cmd_tca(args) -> int:
+    from calsuite.lens import charuco, tca as tcamod
+
     frames = _load_raw_folder(args.from_dir)
     if not frames:
         print(f"no raw files under {args.from_dir}")
@@ -141,6 +154,8 @@ def _cmd_tca(args) -> int:
 
 
 def _parse_poses(spec: str, n: int) -> list:
+    from calsuite.lens import flats as flatsmod
+
     parts = spec.split(",")
     if len(parts) != n:
         raise ValueError(f"--poses has {len(parts)} entries but {n} raw files were found")
@@ -155,6 +170,8 @@ def _parse_poses(spec: str, n: int) -> list:
 
 
 def _cmd_flats(args) -> int:
+    from calsuite.lens import flats as flatsmod
+
     frames = _load_raw_folder(args.from_dir)
     if not frames:
         print(f"no raw files under {args.from_dir}")
@@ -199,6 +216,8 @@ def _cmd_flats(args) -> int:
 
 
 def _cmd_mtf(args) -> int:
+    from calsuite.lens import mtf as mtfmod
+
     frames = _load_raw_folder(args.from_dir)
     if not frames:
         print(f"no raw files under {args.from_dir}")
@@ -231,6 +250,8 @@ def _cmd_mtf(args) -> int:
 
 
 def _cmd_psf(args) -> int:
+    from calsuite.lens import psf as psfmod
+
     frames = _load_raw_folder(args.from_dir)
     if not frames:
         print(f"no raw files under {args.from_dir}")
@@ -262,6 +283,8 @@ def _cmd_psf(args) -> int:
 
 
 def _cmd_export(args) -> int:
+    from calsuite.lens import export_lensfun
+
     st = _store()
     distortion_record = st.latest("lens.distortion", args.device_id)
     tca_record = st.latest("lens.tca", args.device_id)
@@ -280,6 +303,8 @@ def _cmd_export(args) -> int:
 
 
 def _cmd_report(args) -> int:
+    from calsuite.lens import export_lensfun, report as reportmod
+
     st = _store()
     distortion_record = st.latest("lens.distortion", args.device_id)
     tca_record = st.latest("lens.tca", args.device_id)

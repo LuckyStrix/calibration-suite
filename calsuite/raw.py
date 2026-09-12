@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -159,6 +159,45 @@ def planes(frame: RawFrame, area: str = "visible") -> dict:
     return out
 
 
+def black_level_by_channel(frame: RawFrame) -> dict:
+    """Map ``frame.black_level``'s 4 values -- documented on ``RawFrame`` as
+    "4 values from metadata" with no channel names attached -- to the same
+    channel names ``planes()``/``optical_black()`` use ("R", "G1", "G2",
+    "B"). Several callers used to work around the missing mapping with a
+    plain ``mean(black_level)`` scalar, which is silently wrong on any
+    sensor with a genuinely different black level per channel (real on
+    some CMOS designs, where the two green amplifier chains -- G1 and G2 --
+    can read a few DN apart); this is the one place that mapping is done,
+    so ``camera/bias.py`` and ``camera/chart.py`` (and anything else that
+    needs a per-channel black) can do it correctly.
+
+    ``black_level``'s 4 entries are positional in *raster order of the 2x2
+    tile at the sensor's own absolute (row=0, col=0) origin* -- the same
+    origin rawpy's ``raw_pattern``/``black_level_per_channel`` are defined
+    against (confirmed against LibRaw's documented ``cblack[0..3]``
+    convention: one value per color-filter index, in the order that index
+    is first encountered scanning that origin tile in raster order, which
+    for a standard 2x2 Bayer CFA is exactly "R, first-G, B, second-G").
+    ``frame.pattern``, by contrast, is named relative to the *visible*
+    origin (``frame.visible``), which is a different tile whenever either
+    margin (``frame.visible[0].start`` / ``frame.visible[1].start``) is
+    odd -- the visible tile is then the absolute tile's phase shifted by
+    one row and/or column. This function undoes exactly that shift before
+    naming each value, so it's correct in general, not just on sensors
+    (the R100 included: 56/288, both even) where the two origins happen to
+    coincide.
+    """
+    row_shift = frame.visible[0].start % 2
+    col_shift = frame.visible[1].start % 2
+    visible_names = _plane_positions(frame.pattern)
+    absolute_positions = ((0, 0), (0, 1), (1, 0), (1, 1))  # raster order -- black_level's own order
+    out = {}
+    for value, (r, c) in zip(frame.black_level, absolute_positions, strict=True):
+        visible_pos = ((r + row_shift) % 2, (c + col_shift) % 2)
+        out[visible_names[visible_pos]] = value
+    return out
+
+
 def optical_black(frame: RawFrame) -> dict:
     """Per-CFA-channel float64 arrays from the masked **left-margin**
     columns (the extra columns outside the visible width, e.g. 288 of them
@@ -182,14 +221,31 @@ def optical_black(frame: RawFrame) -> dict:
     return out
 
 
+NPZ_EXTENSIONS = {".npz"}
+# A synthetic ``RawFrame`` (synth.sensor.frame(), synth.color.render_chart(),
+# ...) has no real raw file behind it, so it could never be written to disk
+# and read back before this format existed -- which is exactly what stopped
+# several areas from writing a CLI-level test (a command that takes
+# ``--from DIR`` needs *files* in that directory, not an in-memory object).
+# ``.npz`` round-trips every field a real raw file's ``load()`` produces, so
+# a synthetic frame can be saved once and then handled identically to a real
+# raw everywhere a folder of captures is accepted (docs/design.md §3.3:
+# "manual import is first-class").
+
+
 def load(path: Path | str) -> RawFrame:
     """Load a raw file's pixels via rawpy and its metadata via exiftool
     (preferred) or dcraw (fallback -- exiftool is a system package the user
     installs; dcraw is more commonly already present, per docs/design.md
-    §0)."""
+    §0). A ``.npz`` path (see ``save_npz``) is loaded via ``load_npz``
+    instead -- the two formats are interchangeable everywhere a ``RawFrame``
+    is accepted."""
+    path = Path(path)
+    if path.suffix in NPZ_EXTENSIONS:
+        return load_npz(path)
+
     import rawpy  # imported lazily so devices.py/store.py etc. stay importable without it
 
-    path = Path(path)
     with rawpy.imread(str(path)) as raw:
         cfa = raw.raw_image.copy()  # full array, margins included -- never demosaiced
         sizes = raw.sizes
@@ -200,6 +256,72 @@ def load(path: Path | str) -> RawFrame:
         white_level = float(raw.white_level)
 
     meta = _read_metadata(path)
+    return RawFrame(
+        cfa=cfa,
+        pattern=pattern,
+        visible=visible,
+        black_level=black_level,
+        white_level=white_level,
+        meta=meta,
+        path=str(path),
+        sha256=sha256_file(path),
+    )
+
+
+def save_npz(frame: RawFrame, path: Path | str) -> Path:
+    """Write ``frame`` to ``path`` (must end in ``.npz``) so it round-trips
+    through ``load()``/``load_npz()`` -- every ``RawFrame`` field, including
+    every ``FrameMeta`` field (``settings`` included), not just the pixels.
+
+    Strings are stored as 0-d numpy arrays (``np.array("RGGB")`` etc.) and
+    ``FrameMeta`` as one JSON string in the same form, rather than via
+    ``allow_pickle=True`` -- an ``.npz`` written by this suite should be
+    loadable by anything reading numpy's format, not just by a Python
+    process willing to unpickle an unknown file.
+    """
+    path = Path(path)
+    if path.suffix not in NPZ_EXTENSIONS:
+        raise ValueError(f"save_npz path must end in .npz, got {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        path,
+        cfa=frame.cfa,
+        pattern=np.array(frame.pattern),
+        visible_row_start=np.array(frame.visible[0].start),
+        visible_row_stop=np.array(frame.visible[0].stop),
+        visible_col_start=np.array(frame.visible[1].start),
+        visible_col_stop=np.array(frame.visible[1].stop),
+        black_level=np.array(frame.black_level, dtype=np.float64),
+        white_level=np.array(frame.white_level, dtype=np.float64),
+        meta_json=np.array(json.dumps(asdict(frame.meta))),
+        sha256=np.array(frame.sha256),
+    )
+    return path
+
+
+def load_npz(path: Path | str) -> RawFrame:
+    """Load a ``RawFrame`` written by ``save_npz`` -- the synthetic-frame
+    round trip that lets ``capture.manual.scan_folder`` and every area's
+    ``--from DIR`` treat a synthetic session exactly like a folder of real
+    raw files (docs/implementation-plan.md Wave 3, fix list item 4).
+
+    ``path`` (not the embedded value) becomes the returned frame's
+    ``.path``, and its SHA-256 is recomputed from the file on disk rather
+    than trusted from inside it -- same rule ``load()`` follows for a real
+    raw file: the hash always describes the actual bytes being read, which
+    is what a record's ``inputs[].sha256`` is for.
+    """
+    path = Path(path)
+    with np.load(path, allow_pickle=False) as npz:
+        cfa = npz["cfa"]
+        pattern = str(npz["pattern"])
+        visible = (
+            slice(int(npz["visible_row_start"]), int(npz["visible_row_stop"])),
+            slice(int(npz["visible_col_start"]), int(npz["visible_col_stop"])),
+        )
+        black_level = tuple(float(v) for v in npz["black_level"])
+        white_level = float(npz["white_level"])
+        meta = FrameMeta(**json.loads(str(npz["meta_json"])))
     return RawFrame(
         cfa=cfa,
         pattern=pattern,

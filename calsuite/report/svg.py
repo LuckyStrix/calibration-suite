@@ -220,13 +220,19 @@ def heatmap(
     colorbar: bool = True,
     value_range: tuple | None = None,
 ) -> str:
-    """``grid``: a 2D sequence of floats (row-major). ``value_range``
-    overrides the auto min/max -- pass it to keep two heatmaps' colors
-    comparable (e.g. PRNU maps from two different ISOs)."""
+    """``grid``: a 2D sequence of floats (row-major), where a cell may be
+    ``None`` (e.g. ``lens.mtf_field_grid``'s map: a field-grid cell whose
+    own edge check failed is recorded as ``None`` rather than dropping the
+    whole map, per that function's own docstring) -- a ``None`` cell is
+    excluded from the auto min/max and drawn as a flat "no data" gray
+    rather than colored, instead of raising when it's compared against a
+    number. ``value_range`` overrides the auto min/max -- pass it to keep
+    two heatmaps' colors comparable (e.g. PRNU maps from two different
+    ISOs)."""
     rows = [list(r) for r in grid]
     nrows = len(rows)
     ncols = len(rows[0]) if nrows else 0
-    flat = [v for row in rows for v in row]
+    flat = [v for row in rows for v in row if v is not None]
     lo, hi = value_range if value_range is not None else ((min(flat), max(flat)) if flat else (0.0, 1.0))
     if hi == lo:
         hi = lo + 1.0
@@ -246,9 +252,17 @@ def heatmap(
         )
     for r, row in enumerate(rows):
         for c, v in enumerate(row):
-            t = min(1.0, max(0.0, (v - lo) / (hi - lo)))
             x, y = margin_left + c * cell_w, margin_top + r * cell_h
-            parts.append(f'<rect x="{x:.2f}" y="{y:.2f}" width="{cell_w:.2f}" height="{cell_h:.2f}" fill="{_ramp_color(t)}"/>')
+            if v is None:
+                fill = "#d1d5db"  # neutral gray -- "no data for this cell", not a colored (0 = blue) value
+                title = "<title>no data</title>"
+            else:
+                t = min(1.0, max(0.0, (v - lo) / (hi - lo)))
+                fill = _ramp_color(t)
+                title = ""
+            parts.append(
+                f'<rect x="{x:.2f}" y="{y:.2f}" width="{cell_w:.2f}" height="{cell_h:.2f}" fill="{fill}">{title}</rect>'
+            )
 
     if colorbar:
         bar_x = width - margin_right + 16

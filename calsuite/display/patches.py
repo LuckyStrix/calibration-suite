@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import colour
-
 from calsuite.display import constants as dc
 
 # The chart dataset colour-science ships, matching docs/design.md §3.2's
@@ -150,6 +148,8 @@ def validation_set() -> list:
     alongside its six built-in neutrals; `VALIDATION_EXTRA_NEUTRAL_L`
     adds denser gray-axis sampling between them.
     """
+    import colour
+
     cc = colour.CCS_COLOURCHECKERS[_CC24_DATASET]
     patches = []
     for name, xyy in cc.data.items():

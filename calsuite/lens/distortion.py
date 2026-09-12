@@ -16,7 +16,6 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-import cv2
 import numpy as np
 
 from calsuite.fit import Analysis, Refusal
@@ -44,6 +43,8 @@ class BoardView:
 
 
 def _reprojection_rms(objp, imgp, rvec, tvec, K, dist) -> float:
+    import cv2
+
     proj, _ = cv2.projectPoints(objp, rvec, tvec, K, dist)
     err = proj.reshape(-1, 2) - imgp.reshape(-1, 2)
     return float(np.sqrt(np.mean(np.sum(err * err, axis=1))))
@@ -51,20 +52,40 @@ def _reprojection_rms(objp, imgp, rvec, tvec, K, dist) -> float:
 
 def coverage_grid(views: list, image_size: tuple) -> np.ndarray:
     """``(COVERAGE_RADIAL_BINS, COVERAGE_ANGULAR_BINS)`` corner-count grid
-    in polar coordinates about the image center, radius normalized to
-    ``[0, 1]`` by the half-diagonal. Used both for the coverage refusal
-    (only the outermost radial ring, i.e. the outer
+    in polar coordinates about the image center. Used both for the
+    coverage refusal (only the outermost radial ring, i.e. the outer
     ``COVERAGE_OUTER_FRACTION`` of the field, matters for that) and for
-    report.py's coverage heatmap."""
+    report.py's coverage heatmap.
+
+    Radius is normalized to ``[0, 1]`` **per angle**, by the distance from
+    center to the image's own rectangular boundary *in that direction*
+    (``min(half_width / |cos theta|, half_height / |sin theta|)``) -- not
+    by the fixed half-diagonal. The half-diagonal is only reached exactly
+    at the image's 4 corners; every other direction's boundary is strictly
+    closer (down to ``half_height``/``half_width`` at the 4 cardinal
+    directions, ~0.55-0.71x the half-diagonal for a typical sensor aspect
+    ratio). Normalizing by a single global "1.0 = corner" scale made the
+    frame's own top/bottom/left/right edge *midpoints* structurally
+    unreachable at any outer-ring threshold above roughly 0.7-0.8, no
+    matter how good real coverage was -- a corner detected exactly at the
+    top-center of the frame (as close to that edge as any point can ever
+    be) still failed to count as "outer field," which is backwards. This
+    normalization instead asks the question the refusal is actually meant
+    to ask: for each detected corner, how close is it to *the edge of the
+    frame nearest it*, not to the far corner overall.
+    """
     width, height = image_size
     cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
-    half_diag = math.hypot(width, height) / 2.0
+    half_width, half_height = width / 2.0, height / 2.0
     pts = np.concatenate([v.corners for v in views], axis=0) if views else np.zeros((0, 2))
     grid = np.zeros((COVERAGE_RADIAL_BINS, COVERAGE_ANGULAR_BINS), dtype=np.int64)
     if pts.shape[0] == 0:
         return grid
-    r = np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) / half_diag
-    theta = np.arctan2(pts[:, 1] - cy, pts[:, 0] - cx)
+    dx, dy = pts[:, 0] - cx, pts[:, 1] - cy
+    theta = np.arctan2(dy, dx)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        r_max_at_theta = np.minimum(half_width / np.abs(np.cos(theta)), half_height / np.abs(np.sin(theta)))
+    r = np.hypot(dx, dy) / r_max_at_theta
     r_idx = np.clip((r * COVERAGE_RADIAL_BINS).astype(int), 0, COVERAGE_RADIAL_BINS - 1)
     theta_idx = np.clip(
         ((theta + math.pi) / (2 * math.pi) * COVERAGE_ANGULAR_BINS).astype(int), 0, COVERAGE_ANGULAR_BINS - 1
@@ -135,6 +156,8 @@ def fit_distortion(board, views: list, image_size: tuple) -> Analysis:
     coverage and outlier-dropping refusals, refit to lensfun's export
     models. ``image_size`` is ``(width, height)`` in sensor pixels
     (``charuco.image_size_from_frame``)."""
+    import cv2
+
     a = Analysis()
 
     usable = [v for v in views if len(v.ids) >= DISTORTION_MIN_CORNERS_PER_VIEW]

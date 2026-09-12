@@ -3,8 +3,9 @@ from pathlib import Path
 
 import numpy as np
 
+from calsuite import raw as rawmod
 from calsuite.capture import manual
-from calsuite.raw import FrameMeta
+from calsuite.raw import FrameMeta, RawFrame
 from calsuite.synth import sensor as synth_sensor
 
 
@@ -79,3 +80,74 @@ def test_scan_folder_ignores_non_raw_files(tmp_path, monkeypatch):
     monkeypatch.setattr(manual.rawmod, "load", lambda path: _frame_with_signal(5, 0.0005))
     manifest = manual.scan_folder(tmp_path)
     assert len(manifest.entries) == 1
+
+
+def test_scan_folder_caches_the_decoded_frame_no_double_load(tmp_path, monkeypatch):
+    (tmp_path / "bias0000.cr3").write_bytes(b"not a real raw file")
+    frame = _frame_with_signal(5, 0.0005)
+    calls = []
+
+    def fake_load(path):
+        calls.append(path)
+        return frame
+
+    monkeypatch.setattr(manual.rawmod, "load", fake_load)
+    manifest = manual.scan_folder(tmp_path)
+    assert len(calls) == 1  # scan_folder decoded it exactly once
+    assert manifest.entries[0].frame is frame  # ...and handed that same object back on the entry
+
+
+def _slanted_edge_frame(black_dn=512.0, exposure_s=0.01) -> RawFrame:
+    """A crude but genuinely bimodal target: half the visible area near
+    black, half near white, mean landing near 50% of the DN range -- lands
+    in classify()'s "flat" DN band by mean alone, the exact case fix list
+    item 6 calls out (a slanted-edge target at ~50% signal misclassified
+    as "flat"). No PRNU/DSNU (irrelevant to this check; the bimodal split
+    itself is what should trip the CV heuristic).
+    """
+    rows, cols = 64, 96
+    top, left = 8, 16
+    white = black_dn + 20000.0
+    cfa = np.full((rows + top, cols + left), black_dn, dtype=np.float64)
+    visible = cfa[top:, left:]
+    visible[:, : cols // 2] = white  # left half bright, right half at black
+    return RawFrame(
+        cfa=cfa.astype(np.uint16),
+        pattern="RGGB",
+        visible=(slice(top, top + rows), slice(left, left + cols)),
+        black_level=(black_dn,) * 4,
+        white_level=white,
+        meta=FrameMeta(exposure_s=exposure_s),
+        path="<synthetic-edge>",
+        sha256="",
+    )
+
+
+def test_classify_slanted_edge_target_not_misclassified_as_flat():
+    frame = _slanted_edge_frame()
+    assert manual.classify(frame) == "target"
+
+
+def test_classify_expected_role_overrides_heuristic():
+    frame = _slanted_edge_frame()
+    assert manual.classify(frame, expected_role="flat") == "flat"
+
+
+def test_scan_folder_expected_role_applies_to_every_frame(tmp_path, monkeypatch):
+    for name in ("edge0000.cr3", "edge0001.cr3"):
+        (tmp_path / name).write_bytes(b"not a real raw file")
+    monkeypatch.setattr(manual.rawmod, "load", lambda path: _slanted_edge_frame())
+    manifest = manual.scan_folder(tmp_path, expected_role="target")
+    assert {e.role for e in manifest.entries} == {"target"}
+
+
+def test_scan_folder_accepts_npz_frames(tmp_path):
+    model = synth_sensor.SensorModel(shape=(48, 64), black_dn=512.0, prnu_std=0.0, dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0)
+    rng = np.random.default_rng(0)
+    frame = synth_sensor.frame(model, exposure_s=1e-4, flux_e_per_s=0.0, temp_c=20.0, rng=rng)
+    rawmod.save_npz(frame, tmp_path / "bias0000.npz")
+
+    manifest = manual.scan_folder(tmp_path)
+    assert len(manifest.entries) == 1
+    assert manifest.entries[0].role == "bias"
+    assert manifest.entries[0].frame is not None
