@@ -21,9 +21,51 @@ def test_synthetic_measure_profile_validate_report_end_to_end(tmp_path, monkeypa
 
     rc = cli.main(["display", "report", "--device-id", device_id, "--out", str(tmp_path / "report.html")])
     assert rc == 0
-    html = (tmp_path / "report.html").read_text()
+    # Regression guard (Windows CI: cp1252 can't encode 'Δ', and this
+    # report's own additivity/validation sections write it literally --
+    # "ΔE00 = ..." -- so a write_text()/open() with no explicit encoding
+    # anywhere on this path used to crash on Windows before it ever wrote
+    # a byte). Read back with the same explicit encoding the writer uses.
+    html = (tmp_path / "report.html").read_text(encoding="utf-8")
     assert "Tone response curves" in html
     assert "Validation" in html
+    assert "Δ" in html
+
+
+def test_report_and_record_round_trip_a_delta_character(tmp_path, monkeypatch):
+    """Regression guard for the Windows cp1252-vs-'Δ' bug: both file
+    formats every area writes -- a JSON record (`store.Store.save`/
+    `load`) and an HTML report (`display/commands.py`'s `_cmd_report`,
+    via `write_text`) -- must round-trip a literal 'Δ' through the real
+    code path, not a stand-in ASCII string. This is deliberately a
+    smaller, more targeted check than the full measure/profile/validate/
+    report end-to-end test above (which also covers it, via the real
+    validation ΔE00 text), so a future encoding regression fails fast
+    right here.
+    """
+    monkeypatch.setenv("CALSUITE_RECORDS", str(tmp_path))
+    device_id = "delta-roundtrip-display"
+
+    st = storemod.Store(tmp_path)
+    from calsuite.fit import Analysis
+
+    record = storemod.Record.from_analysis(
+        kind="display.measurement",
+        device={"kind": "display", "model": device_id, "id": device_id, "firmware": ""},
+        analysis=Analysis(result={"note": "mean ΔE00 = 1.234"}),
+        provenance="measured",
+        method={"name": "test", "calsuite_version": "0", "params": {}},
+    )
+    path = st.save(record)
+    loaded = st.load(path)
+    assert loaded.result["note"] == "mean ΔE00 = 1.234"
+
+    rc = cli.main(["display", "measure", "--backend", "synthetic", "--device-id", device_id, "--steps", "5"])
+    assert rc == 0
+    rc = cli.main(["display", "report", "--device-id", device_id, "--out", str(tmp_path / "delta.html")])
+    assert rc == 0
+    html = (tmp_path / "delta.html").read_text(encoding="utf-8")
+    assert "Δ" in html
 
 
 def test_nominal_writes_record_from_edid_fixture(tmp_path, monkeypatch):

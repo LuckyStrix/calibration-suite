@@ -25,7 +25,9 @@ def test_building_the_parser_does_not_import_heavy_libs():
         "leaked = sorted(m for m in ('pygame', 'cv2', 'colour') if m in sys.modules)\n"
         "print(','.join(leaked))\n"
     )
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30)
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30
+    )
     assert result.returncode == 0, result.stderr
     leaked = result.stdout.strip()
     assert leaked == "", f"building the CLI parser imported: {leaked}\nstderr:\n{result.stderr}"

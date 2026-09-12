@@ -24,7 +24,7 @@ def read_spectrum_csv(path: Path | str) -> tuple:
     parse as two floats (e.g. a header) is skipped rather than raising --
     spectrophotometer export tools vary in whether they include one."""
     wavelengths, values = [], []
-    with open(path, newline="") as f:
+    with open(path, newline="", encoding="utf-8") as f:
         for row in csv.reader(f):
             if len(row) < 2:
                 continue

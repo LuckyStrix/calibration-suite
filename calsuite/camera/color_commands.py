@@ -300,7 +300,7 @@ def _cmd_report(args) -> int:
         except Exception:
             reference = None  # a custom-CSV reference chart's name won't resolve here -- report just skips the swatch section
     html = color_report.render(record, reference=reference)
-    with open(args.out, "w") as f:
+    with open(args.out, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"wrote {args.out}")
     return 0

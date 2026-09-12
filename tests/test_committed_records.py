@@ -39,7 +39,7 @@ def test_committed_records_parse_via_the_store():
 def test_committed_display_nominal_record_has_nominal_provenance_and_no_serial():
     found_display_nominal = False
     for path in _committed_record_paths():
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         if data["kind"] != "display.nominal":
             continue
         found_display_nominal = True

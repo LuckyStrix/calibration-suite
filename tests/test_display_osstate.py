@@ -1,17 +1,9 @@
-import os
 import sys
 
 import pytest
 
 from calsuite.display import osstate
 from calsuite.fit import Refusal
-
-
-def _make_script(tmp_path, name, body):
-    p = tmp_path / name
-    p.write_text(body)
-    p.chmod(0o755)
-    return p
 
 
 def test_reset_gamma_table_missing_dispwin(monkeypatch):
@@ -21,33 +13,29 @@ def test_reset_gamma_table_missing_dispwin(monkeypatch):
     assert "not found" in method
 
 
-def test_reset_gamma_table_success(tmp_path, monkeypatch):
-    _make_script(tmp_path, "dispwin", "#!/bin/sh\nexit 0\n")
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+def test_reset_gamma_table_success(fake_bin):
+    fake_bin("dispwin", "")
     done, method = osstate.reset_gamma_table()
     assert done is True
     assert method == "dispwin -c"
 
 
-def test_reset_gamma_table_failure(tmp_path, monkeypatch):
-    _make_script(tmp_path, "dispwin", "#!/bin/sh\necho boom 1>&2\nexit 1\n")
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+def test_reset_gamma_table_failure(fake_bin):
+    fake_bin("dispwin", "import sys\nprint('boom', file=sys.stderr)\nsys.exit(1)\n")
     done, method = osstate.reset_gamma_table()
     assert done is False
     assert "failed" in method
 
 
-def test_check_x11_icc_profile_unset(tmp_path, monkeypatch):
-    _make_script(tmp_path, "xprop", "#!/bin/sh\necho '_ICC_PROFILE:  not found.'\n")
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+def test_check_x11_icc_profile_unset(fake_bin):
+    fake_bin("xprop", "print('_ICC_PROFILE:  not found.')\n")
     atom, warning = osstate.check_x11_icc_profile()
     assert atom is None
     assert warning is None
 
 
-def test_check_x11_icc_profile_set(tmp_path, monkeypatch):
-    _make_script(tmp_path, "xprop", "#!/bin/sh\necho '_ICC_PROFILE(CARDINAL) = 26, 0, 0, 0'\n")
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+def test_check_x11_icc_profile_set(fake_bin):
+    fake_bin("xprop", "print('_ICC_PROFILE(CARDINAL) = 26, 0, 0, 0')\n")
     atom, warning = osstate.check_x11_icc_profile()
     assert atom is not None
     assert "may be active" in warning
@@ -96,12 +84,11 @@ def test_refuse_if_hdr_on_false_passes():
     assert osstate.refuse_if_hdr_on(state) is None
 
 
-def test_gather_on_linux_sets_hdr_false(tmp_path, monkeypatch):
+def test_gather_on_linux_sets_hdr_false(fake_bin):
     if not sys.platform.startswith("linux"):
         pytest.skip("linux-specific behavior")
-    _make_script(tmp_path, "dispwin", "#!/bin/sh\nexit 0\n")
-    _make_script(tmp_path, "xprop", "#!/bin/sh\necho '_ICC_PROFILE:  not found.'\n")
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    fake_bin("dispwin", "")
+    fake_bin("xprop", "print('_ICC_PROFILE:  not found.')\n")
     state = osstate.gather(osd={"brightness": "80%"})
     assert state.platform.startswith("linux")
     assert state.hdr_on is False

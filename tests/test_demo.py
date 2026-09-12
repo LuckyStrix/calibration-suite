@@ -25,7 +25,7 @@ def demo_result(tmp_path_factory):
 def test_index_written_and_links_every_report(demo_result):
     result, _out_dir = demo_result
     assert result["index"].exists()
-    index_html = result["index"].read_text()
+    index_html = result["index"].read_text(encoding="utf-8")
     assert "calsuite demo" in index_html
 
 
@@ -67,7 +67,7 @@ def test_records_are_valid_json_with_a_known_provenance(demo_result):
     paths = list((out_dir / "records").glob("*/*.json"))
     assert paths
     for p in paths:
-        data = json.loads(p.read_text())
+        data = json.loads(p.read_text(encoding="utf-8"))
         assert data["schema"] == 1
         assert data["provenance"] in ("measured", "derived", "vendor", "nominal")
 

@@ -56,7 +56,7 @@ def _write_spectra(patches, folder):
     wavelengths = range(400, 701, 50)
     for p in patches:
         mean_level = sum(p.rgb) / 3.0
-        with open(folder / f"{p.label}.csv", "w") as f:
+        with open(folder / f"{p.label}.csv", "w", encoding="utf-8") as f:
             for wl in wavelengths:
                 f.write(f"{wl},{1.0 + mean_level * 10.0}\n")
 

@@ -329,7 +329,7 @@ def _cmd_report(args) -> int:
     )
     out_path = Path(args.out) if args.out else config.records_dir() / args.device_id / "report.html"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(html)
+    out_path.write_text(html, encoding="utf-8")
     print(f"wrote {out_path}")
     return 0
 

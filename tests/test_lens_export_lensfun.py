@@ -76,7 +76,7 @@ def test_write_lensfun_to_explicit_out_dir(tmp_path):
     xml_text = E.build_xml(lens_model="Test Lens 50mm")
     path = E.write_lensfun(xml_text, out=tmp_path, filename="test.xml")
     assert path.exists()
-    assert path.read_text() == xml_text
+    assert path.read_text(encoding="utf-8") == xml_text
 
 
 def test_write_lensfun_to_explicit_xml_path(tmp_path):

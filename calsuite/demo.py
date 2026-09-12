@@ -392,7 +392,7 @@ def _run_color(records_dir: Path, out_dir: Path, warnings: list) -> tuple:
         return np.exp(-0.5 * ((wl - center) / sigma) ** 2)
 
     r, g, b = _gauss(600.0, 40.0), _gauss(540.0, 45.0), _gauss(460.0, 35.0)
-    with open(ssf_csv, "w") as f:
+    with open(ssf_csv, "w", encoding="utf-8") as f:
         f.write("nm,r,g,b\n")
         for wl_i, r_i, g_i, b_i in zip(wl, r, g, b, strict=True):
             f.write(f"{wl_i},{r_i},{g_i},{b_i}\n")
@@ -461,7 +461,8 @@ def _write_index(path: Path, reports: dict, warnings: list) -> None:
         "colorimeter, ArgyllCMS's colprof/dispwin) are stood in for.</p>"
         f"<h2>Reports</h2><ul>{''.join(rows)}</ul>"
         f"{warning_html}"
-        "</body></html>"
+        "</body></html>",
+        encoding="utf-8",
     )
 
 

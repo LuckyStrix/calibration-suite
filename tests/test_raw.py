@@ -1,5 +1,5 @@
 import hashlib
-import os
+import json
 
 import numpy as np
 import pytest
@@ -72,22 +72,17 @@ def test_parse_shutter_fraction_and_decimal():
     assert raw._parse_shutter("4") == pytest.approx(4.0)
 
 
-def test_metadata_from_dcraw_fallback(tmp_path, monkeypatch):
-    fake_dcraw = tmp_path / "dcraw"
-    fake_dcraw.write_text(
-        "#!/bin/sh\n"
-        "cat <<'EOF'\n"
-        "Filename: x.cr3\n"
+def test_metadata_from_dcraw_fallback(tmp_path, fake_bin):
+    fake_bin(
+        "dcraw",
+        "print('''Filename: x.cr3\n"
         "Timestamp: Thu May 21 09:23:18 2026\n"
         "Camera: Canon EOS R100\n"
         "ISO speed: 800\n"
         "Shutter: 1/83.0 sec\n"
         "Aperture: f/1.8\n"
-        "Focal length: 50.0 mm\n"
-        "EOF\n"
+        "Focal length: 50.0 mm''')\n",
     )
-    fake_dcraw.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
 
     meta = raw._metadata_from_dcraw(tmp_path / "whatever.cr3")
     assert meta.model == "Canon EOS R100"
@@ -100,18 +95,21 @@ def test_metadata_from_dcraw_fallback(tmp_path, monkeypatch):
     assert meta.lens == ""
 
 
-def test_metadata_from_exiftool_fake(tmp_path, monkeypatch):
-    fake_exiftool = tmp_path / "exiftool"
-    fake_exiftool.write_text(
-        "#!/bin/sh\n"
-        "cat <<'EOF'\n"
-        '[{"Model":"Canon EOS R100","SerialNumber":"12345","FocalLength":50.0,'
-        '"FNumber":1.8,"ExposureTime":0.012,"ISO":800,'
-        '"DateTimeOriginal":"2026:05:21 09:23:18"}]\n'
-        "EOF\n"
+def test_metadata_from_exiftool_fake(tmp_path, fake_bin):
+    payload = json.dumps(
+        [
+            {
+                "Model": "Canon EOS R100",
+                "SerialNumber": "12345",
+                "FocalLength": 50.0,
+                "FNumber": 1.8,
+                "ExposureTime": 0.012,
+                "ISO": 800,
+                "DateTimeOriginal": "2026:05:21 09:23:18",
+            }
+        ]
     )
-    fake_exiftool.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    fake_bin("exiftool", f"print({payload!r})\n")
 
     meta = raw._metadata_from_exiftool(tmp_path / "whatever.cr3")
     assert meta.model == "Canon EOS R100"

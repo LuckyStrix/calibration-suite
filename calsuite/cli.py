@@ -222,6 +222,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list | None = None) -> int:
+    # Several reports print a line containing 'Delta' as the actual Greek
+    # letter (e.g. "mean ΔE00=..."). On Windows, console/redirected
+    # stdout defaults to the system codepage (cp1252 and friends), which
+    # cannot encode it -- `print()` would raise UnicodeEncodeError before a
+    # single character reaches the screen or a captured-output log.
+    # `reconfigure` (TextIOWrapper, Python 3.7+) is a no-op-safe way to
+    # force UTF-8 for this process's own stdout/stderr; scoped to Windows
+    # so Linux/macOS (already UTF-8 almost everywhere) are untouched.
+    if sys.platform == "win32":  # pragma: no cover -- exercised only on Windows CI
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+
     parser = _build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):

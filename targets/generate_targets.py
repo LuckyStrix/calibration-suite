@@ -116,7 +116,7 @@ def main(argv=None) -> int:
         "slanted_edge": generate_slanted_edge(args.out),
         "gray_ramp": generate_gray_ramp(args.out),
     }
-    (args.out / "board_geometry.json").write_text(json.dumps(geometry, indent=2))
+    (args.out / "board_geometry.json").write_text(json.dumps(geometry, indent=2), encoding="utf-8")
     print(f"wrote targets to {args.out}")
     return 0
 

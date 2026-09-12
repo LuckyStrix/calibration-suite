@@ -90,7 +90,7 @@ def test_load_ssf_csv_round_trip(tmp_path):
     lines = ["nm,r,g,b"]
     for wl, r, g, b in zip(_WL, NARROW_BAND_SSF.r, NARROW_BAND_SSF.g, NARROW_BAND_SSF.b, strict=True):
         lines.append(f"{wl},{r},{g},{b}")
-    path.write_text("\n".join(lines))
+    path.write_text("\n".join(lines), encoding="utf-8")
 
     loaded = ssf.load_ssf_csv(path)
     assert loaded.wavelengths == pytest.approx(_WL)

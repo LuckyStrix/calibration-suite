@@ -75,7 +75,7 @@ def test_scan_folder_builds_manifest(tmp_path, monkeypatch):
 
 
 def test_scan_folder_ignores_non_raw_files(tmp_path, monkeypatch):
-    (tmp_path / "notes.txt").write_text("hello")
+    (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
     (tmp_path / "bias0000.cr3").write_bytes(b"x")
     monkeypatch.setattr(manual.rawmod, "load", lambda path: _frame_with_signal(5, 0.0005))
     manifest = manual.scan_folder(tmp_path)

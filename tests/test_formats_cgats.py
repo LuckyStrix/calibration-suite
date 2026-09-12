@@ -31,7 +31,7 @@ def test_write_rejects_bad_device_class(tmp_path):
 def test_file_has_expected_cgats_structure(tmp_path):
     path = tmp_path / "test.ti3"
     cgats.write_ti3(path, [{"rgb": (0.5, 0.5, 0.5), "xyz": (0.4, 0.4, 0.4)}])
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     assert text.startswith("CTI3")
     assert "BEGIN_DATA_FORMAT" in text and "END_DATA_FORMAT" in text
     assert "RGB_R" in text and "XYZ_X" in text
@@ -50,7 +50,8 @@ def test_read_rejects_missing_xyz_fields(tmp_path):
         "NUMBER_OF_SETS 1\n"
         "BEGIN_DATA\n"
         "0.0 0.0\n"
-        "END_DATA\n"
+        "END_DATA\n",
+        encoding="utf-8",
     )
     with pytest.raises(ValueError):
         cgats.read_ti3(path)

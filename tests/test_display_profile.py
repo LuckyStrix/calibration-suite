@@ -1,5 +1,3 @@
-import os
-
 import pytest
 
 from calsuite.display import analysis as analysismod
@@ -8,13 +6,6 @@ from calsuite.display import profile as profilemod
 from calsuite.display import validate as validatemod
 from calsuite.formats import cgats
 from calsuite.synth.display import DisplayModel
-
-
-def _make_script(tmp_path, name, body):
-    p = tmp_path / name
-    p.write_text(body)
-    p.chmod(0o755)
-    return p
 
 
 def _ramp_data(model, channel, steps=17):
@@ -44,16 +35,18 @@ def test_write_ti3_raises_without_white_patch(tmp_path):
         profilemod.write_ti3(tmp_path / "x.ti3", [(0.5, 0.5, 0.5)], [(1.0, 1.0, 1.0)])
 
 
-def test_build_with_colprof_matrix_shaper(tmp_path, monkeypatch):
-    _make_script(
-        tmp_path,
-        "colprof",
-        "#!/bin/bash\n"
-        'base="${!#}"\n'
-        'touch "$base.icc"\n',
-    )
-    _make_script(tmp_path, "profcheck", "#!/bin/sh\necho ok\nexit 0\n")
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+_FAKE_COLPROF = """
+import sys
+from pathlib import Path
+
+base = sys.argv[-1]
+Path(base + ".icc").touch()
+"""
+
+
+def test_build_with_colprof_matrix_shaper(tmp_path, fake_bin):
+    fake_bin("colprof", _FAKE_COLPROF)
+    fake_bin("profcheck", "print('ok')\n")
 
     ti3_base = tmp_path / "display"
     profilemod.write_ti3(ti3_base.with_suffix(".ti3"), [(1.0, 1.0, 1.0), (0.0, 0.0, 0.0)], [(95, 100, 108), (0.1, 0.1, 0.1)])
@@ -63,9 +56,8 @@ def test_build_with_colprof_matrix_shaper(tmp_path, monkeypatch):
     assert result.profcheck_ok is True
 
 
-def test_build_with_colprof_lut_when_recommended(tmp_path, monkeypatch):
-    _make_script(tmp_path, "colprof", '#!/bin/bash\nbase="${!#}"\ntouch "$base.icc"\n')
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+def test_build_with_colprof_lut_when_recommended(tmp_path, fake_bin):
+    fake_bin("colprof", _FAKE_COLPROF)
     ti3_base = tmp_path / "display"
     profilemod.write_ti3(ti3_base.with_suffix(".ti3"), [(1.0, 1.0, 1.0), (0.0, 0.0, 0.0)], [(95, 100, 108), (0.1, 0.1, 0.1)])
     result = profilemod.build_with_colprof(ti3_base, recommend_lut=True, description="test")

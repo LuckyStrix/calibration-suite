@@ -49,7 +49,7 @@ def load_ssf_csv(path: Path | str) -> SSF:
     """Read ``nm,r,g,b`` (header required, any column order/case) -- the
     format the DIY spectrophotometer plan's sec 7 pipeline produces."""
     path = Path(path)
-    with open(path, newline="") as f:
+    with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         fieldmap = {name.strip().lower(): name for name in (reader.fieldnames or [])}
         required = {"nm", "r", "g", "b"}

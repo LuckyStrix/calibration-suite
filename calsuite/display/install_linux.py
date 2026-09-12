@@ -142,7 +142,7 @@ def write_autostart_entry(icc_path: Path, *, autostart_path: Path = AUTOSTART_PA
     report = InstallReport()
     autostart_path = Path(autostart_path)
     autostart_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = autostart_path.read_text() if autostart_path.exists() else ""
+    existing = autostart_path.read_text(encoding="utf-8") if autostart_path.exists() else ""
     lines = existing.splitlines()
 
     out_lines = []
@@ -158,7 +158,7 @@ def write_autostart_entry(icc_path: Path, *, autostart_path: Path = AUTOSTART_PA
     while out_lines and out_lines[-1] == "":
         out_lines.pop()
     out_lines += ["", AUTOSTART_MARKER, new_line]
-    autostart_path.write_text("\n".join(out_lines).strip() + "\n")
+    autostart_path.write_text("\n".join(out_lines).strip() + "\n", encoding="utf-8")
     report.add("openbox autostart", True, f"wrote {autostart_path}")
     return report
 

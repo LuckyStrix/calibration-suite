@@ -462,7 +462,7 @@ def _cmd_report(args) -> int:
         shutter_record=latest["camera.shutter"],
     )
     if args.out:
-        Path(args.out).write_text(html)
+        Path(args.out).write_text(html, encoding="utf-8")
         print(f"wrote {args.out}")
     else:
         print(html)

@@ -75,7 +75,7 @@ def write_ti3(
         x, y, z = s["xyz"]
         lines.append(f"{i} {r * 100:.6f} {g * 100:.6f} {b * 100:.6f} {x * 100:.6f} {y * 100:.6f} {z * 100:.6f}")
     lines.append("END_DATA")
-    Path(path).write_text("\n".join(lines) + "\n")
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _split_keyword_line(line: str) -> tuple[str, str] | None:
@@ -94,7 +94,7 @@ def read_ti3(path: Path | str) -> TI3:
     isn't an RGB->XYZ display measurement set, which is all this module
     reads.
     """
-    text = Path(path).read_text()
+    text = Path(path).read_text(encoding="utf-8")
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
     device_class, descriptor = "", ""

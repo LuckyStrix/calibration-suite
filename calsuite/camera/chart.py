@@ -135,7 +135,7 @@ def reference_from_csv(path: Path | str, *, illuminant_xy: tuple | None = None) 
     rows_hint = cols_hint = None
     file_illuminant_xy = None
     data_lines = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped:
             continue

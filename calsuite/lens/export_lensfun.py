@@ -170,7 +170,7 @@ def write_lensfun(xml_text: str, *, out: Path | str | None = None, filename: str
         target_dir = Path(out) if out is not None else user_data_dir()
         target_path = target_dir / filename
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    target_path.write_text(xml_text)
+    target_path.write_text(xml_text, encoding="utf-8")
     return target_path
 
 

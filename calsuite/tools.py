@@ -71,8 +71,17 @@ def run(args, *, timeout: float = DEFAULT_TIMEOUT_S, check: bool = True) -> Tool
     exe = which(args[0])
     if exe is None:
         raise ToolError(f"{args[0]!r} is not on PATH (needed for: {' '.join(args)})")
+    # Run the *resolved* path, not the bare name -- on Windows, a bare
+    # extensionless name (e.g. "gphoto2") only launches via PATHEXT
+    # resolution through a shell; `which()` (shutil.which) already did that
+    # resolution once (e.g. to "gphoto2.cmd"), so handing that resolved
+    # path straight to subprocess lets it launch directly on every OS
+    # without needing `shell=True`.
+    resolved_args = [exe, *args[1:]]
     try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(
+            resolved_args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
+        )
     except subprocess.TimeoutExpired as exc:
         raise ToolError(f"{' '.join(args)} timed out after {timeout}s") from exc
     if check and proc.returncode != 0:

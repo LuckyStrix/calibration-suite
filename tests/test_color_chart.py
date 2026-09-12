@@ -45,7 +45,8 @@ def test_reference_from_csv_round_trip(tmp_path):
     # column path, which the XYZ path doesn't.
     csv_path = tmp_path / "custom.csv"
     csv_path.write_text(
-        "# rows=1\n# cols=2\n# illuminant=D65\nname,L,a,b\nneutral gray,50,0,0\nvivid red,50,40,30\n"
+        "# rows=1\n# cols=2\n# illuminant=D65\nname,L,a,b\nneutral gray,50,0,0\nvivid red,50,40,30\n",
+        encoding="utf-8",
     )
     ref = chart.reference_from_csv(csv_path)
     assert ref.rows == 1 and ref.cols == 2

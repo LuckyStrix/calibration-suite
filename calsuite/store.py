@@ -216,13 +216,13 @@ class Store:
             record.artifacts.append({"name": name, "sha256": sha256_file(path)})
 
         path = self._record_path(record)
-        path.write_text(json.dumps(record.to_dict(), indent=2))
+        path.write_text(json.dumps(record.to_dict(), indent=2), encoding="utf-8")
         return path
 
     # -- reading -----------------------------------------------------------
 
     def load(self, path: Path | str) -> Record:
-        data = json.loads(Path(path).read_text())
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
         return Record.from_dict(data)
 
     def load_artifact(self, record: Record, name: str) -> dict:

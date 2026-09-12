@@ -66,7 +66,9 @@ def _run_spotread(extra_args: list, timeout: float = dc.SPOTREAD_TIMEOUT_S) -> s
         raise tools.ToolError("'spotread' is not on PATH")
     args = [exe, *extra_args]
     try:
-        proc = subprocess.run(args, input="\n", capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(
+            args, input="\n", capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
+        )
     except subprocess.TimeoutExpired as exc:
         raise tools.ToolError(f"{' '.join(args)} timed out after {timeout}s") from exc
     if proc.returncode != 0:

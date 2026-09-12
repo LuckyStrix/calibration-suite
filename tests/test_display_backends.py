@@ -1,5 +1,3 @@
-import os
-
 import numpy as np
 import pytest
 
@@ -10,14 +8,6 @@ from calsuite.display.backends import camera as cameramod
 from calsuite.display.backends import spectro as spectromod
 from calsuite.display.backends.synthetic import SyntheticBackend
 from calsuite.synth.display import DisplayModel
-
-
-def _make_script(tmp_path, name, body):
-    p = tmp_path / name
-    p.write_text(body)
-    p.chmod(0o755)
-    return p
-
 
 # -- synthetic ---------------------------------------------------------------
 
@@ -44,13 +34,8 @@ def test_argyll_parse_xyz_raises_when_absent():
         argyllmod.parse_xyz("no reading here")
 
 
-def test_argyll_backend_measure_with_fake_spotread(tmp_path, monkeypatch):
-    _make_script(
-        tmp_path,
-        "spotread",
-        '#!/bin/sh\necho "Result is XYZ: 95.05, 100.00, 108.90, D50 Lab: 100 0 0"\n',
-    )
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+def test_argyll_backend_measure_with_fake_spotread(fake_bin):
+    fake_bin("spotread", "print('Result is XYZ: 95.05, 100.00, 108.90, D50 Lab: 100 0 0')\n")
     backend = argyllmod.ArgyllBackend()
     results = backend.measure(patchesmod.primaries_secondaries()[:2])
     assert len(results) == 2
@@ -91,7 +76,7 @@ def test_spectrum_to_xyz_of_d65_like_flat_spectrum_is_near_white():
 
 def test_read_spectrum_csv_round_trip(tmp_path):
     path = tmp_path / "spec.csv"
-    path.write_text("wavelength,value\n400,0.1\n500,0.5\n600,0.9\n")
+    path.write_text("wavelength,value\n400,0.1\n500,0.5\n600,0.9\n", encoding="utf-8")
     wavelengths, values = spectromod.read_spectrum_csv(path)
     assert list(wavelengths) == [400.0, 500.0, 600.0]
     assert list(values) == [0.1, 0.5, 0.9]
@@ -99,7 +84,7 @@ def test_read_spectrum_csv_round_trip(tmp_path):
 
 def test_spectro_backend_measure(tmp_path):
     path = tmp_path / "white.csv"
-    path.write_text("400,1\n500,1\n600,1\n700,1\n")
+    path.write_text("400,1\n500,1\n600,1\n700,1\n", encoding="utf-8")
     backend = spectromod.SpectroBackend(spectra_for_patch=lambda patch: path, luminance_scale=100.0)
     patch = patchesmod.Patch(rgb=(1.0, 1.0, 1.0), label="w")
     result = backend.measure([patch])
