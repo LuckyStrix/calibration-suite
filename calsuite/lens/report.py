@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 
 from calsuite.constants import ESTIMATED_ACCURACY
+from calsuite.lens import tca
 from calsuite.lens.flats import fit_pa
 from calsuite.report import html as reporthtml
 from calsuite.report import svg
@@ -49,7 +50,20 @@ def _distortion_curve_section(record, vendor_comparison: dict | None) -> str:
 def _tca_section(record) -> str:
     if "vr" not in record.result:
         return ""
-    r = np.linspace(0.0, 1.2, 40)
+    # tca.fit_tca fits kr/kb against *raw sensor-pixel* radii (a dimensionless
+    # ratio, so the fit itself doesn't care about scale -- see tca.py's
+    # module docstring), which can run to a couple thousand px at the sensor
+    # corner. Plotting over a fixed 0-1.2 range (a Hugin-normalized-looking
+    # span left over from distortion.py's convention, which this module does
+    # not use) showed only the first ~0.1% of the field: kr/kb values a few
+    # parts in a thousand from 1.0 produce an "offset" too small to see over
+    # such a short radius, making real chromatic aberration look like zero.
+    # Use the record's own image_size (tca.fit_tca now stores it) to plot out
+    # to the actual corner radius; fall back to the old short range only for
+    # an older/partial record that predates that field.
+    image_size = record.result.get("image_size")
+    r_max = tca.half_diagonal(image_size) if image_size else 1.2
+    r = np.linspace(0.0, r_max, 40)
     kr, kb = record.result["kr"], record.result["kb"]
     series = [
         {"name": "R vs G", "x": r.tolist(), "y": (kr * r - r).tolist()},

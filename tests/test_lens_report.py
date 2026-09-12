@@ -93,6 +93,41 @@ def test_render_lens_report_with_empty_result_dicts_does_not_raise():
     assert html.startswith("<!doctype html>")
 
 
+def test_tca_chart_plots_out_to_the_sensor_corner_not_a_fixed_short_range():
+    """tca.fit_tca fits kr/kb against raw sensor-pixel radii (a dimensionless
+    ratio -- see tca.py's module docstring), which run out to a couple
+    thousand px at a real sensor's corner. The chart used to always plot
+    over a fixed 0-1.2 range (a leftover Hugin-normalized-looking span this
+    module never actually uses), so a real few-parts-in-a-thousand kr/kb
+    produced an "offset" of a few thousandths of a pixel over that tiny
+    span -- indistinguishable from zero, understating real chromatic
+    aberration that's several px wide at the sensor's actual corner. With
+    ``image_size`` on the record (as ``tca.fit_tca`` now always includes),
+    the chart's x-axis must reach out near the image's own half-diagonal,
+    not stop at 1.2."""
+    from calsuite.lens import tca as T
+
+    image_size = (6000, 4000)
+    tca_analysis = Analysis(
+        result={
+            "model": "poly3", "vr": 1.0025, "vb": 0.9975, "kr": 1.0025, "kb": 0.9975,
+            "image_size": list(image_size),
+        }
+    )
+    tca_record = Record.from_analysis(
+        kind="lens.tca", device=_device(), analysis=tca_analysis, provenance="measured", method={"name": "tca.fit_tca"}
+    )
+    html = R.render_lens_report(device=_device(), tca_record=tca_record)
+    half_diag = T.half_diagonal(image_size)
+    assert half_diag > 100  # sanity: this is a real few-thousand-px sensor
+    # The chart's x-domain must reach out near the actual corner radius --
+    # not stay pinned to the old fixed [0, 1.2] span regardless of sensor
+    # size. The x-axis's rightmost tick label is exactly the series' own max
+    # x value (report/svg.py's `_nice_ticks` includes the range's upper
+    # bound), formatted the same way (`"{:.3g}"`) as here.
+    assert f"{half_diag:.3g}" in html
+
+
 def test_render_lens_report_error_budget_shows_not_measured_when_rms_absent():
     # `distortion_record.residuals.get("overall_rms_px")` can be `None`
     # (residuals is an empty dict for an early refusal); the error-budget

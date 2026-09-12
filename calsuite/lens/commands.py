@@ -62,6 +62,26 @@ def _store() -> store.Store:
     return store.Store(config.records_dir())
 
 
+def _latest_ok_flats_by_aperture(st: "store.Store", device_id: str) -> dict:
+    """The latest ``status == "ok"`` ``lens.flats`` record per aperture for
+    ``device_id`` -- ``lens.flats`` sessions are per-aperture
+    (docs/design.md §4.3: "Flats at each aperture"), unlike
+    ``distortion``/``tca``/``mtf``/``psf`` which ``store.latest()`` alone
+    already handles as a single record per device. Both ``_cmd_export`` and
+    ``_cmd_report`` need this same aperture-keyed collection."""
+    by_aperture: dict = {}
+    for record in st.all("lens.flats", device_id):
+        if record.status != "ok":
+            continue
+        aperture = record.conditions.get("aperture")
+        if aperture is None:
+            continue
+        existing = by_aperture.get(aperture)
+        if existing is None or record.created > existing.created:
+            by_aperture[aperture] = record
+    return by_aperture
+
+
 # ---------------------------------------------------------------------------
 # distortion
 # ---------------------------------------------------------------------------
@@ -288,11 +308,13 @@ def _cmd_export(args) -> int:
     st = _store()
     distortion_record = st.latest("lens.distortion", args.device_id)
     tca_record = st.latest("lens.tca", args.device_id)
+    flats_records = list(_latest_ok_flats_by_aperture(st, args.device_id).values())
     try:
         xml_text = export_lensfun.export_records(
             lens_model=args.lens_model,
             distortion_record=distortion_record if distortion_record and distortion_record.status == "ok" else None,
             tca_record=tca_record if tca_record and tca_record.status == "ok" else None,
+            flats_records=flats_records,
         )
     except store.ExportRefused as exc:
         print(f"export refused: {exc}")
@@ -310,6 +332,7 @@ def _cmd_report(args) -> int:
     tca_record = st.latest("lens.tca", args.device_id)
     mtf_record = st.latest("lens.mtf", args.device_id)
     psf_record = st.latest("lens.psf", args.device_id)
+    flats_records_by_aperture = _latest_ok_flats_by_aperture(st, args.device_id)
 
     vendor_comparison = None
     if distortion_record is not None and distortion_record.status == "ok":
@@ -323,6 +346,7 @@ def _cmd_report(args) -> int:
         device=device,
         distortion_record=distortion_record,
         tca_record=tca_record,
+        flats_records_by_aperture=flats_records_by_aperture,
         mtf_record=mtf_record,
         psf_record=psf_record,
         vendor_comparison=vendor_comparison,

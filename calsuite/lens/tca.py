@@ -109,6 +109,7 @@ def fit_tca(detections_per_view: list, image_size: tuple) -> Analysis:
         "kb": kb,
         "n_matched_corners": int(r_g.size),
         "n_views": len(r_g_all),
+        "image_size": [int(width), int(height)],
     }
     a.residuals = {"rms_px_r": resid_r, "rms_px_b": resid_b}
     return a
