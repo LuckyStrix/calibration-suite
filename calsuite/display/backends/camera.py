@@ -85,12 +85,17 @@ def frame_to_raw_rgb(frame) -> tuple:
 
     The black level subtracted is ``frame.black_level`` (the ``RawFrame``'s
     own per-metadata black, per this wave's contract: "black level taken
-    from raw"), averaged to one scalar since ``RawFrame.black_level``'s 4
-    values are indexed by the raw file's own CFA tile phase, not
-    necessarily the R/G1/G2/B plane names ``raw.planes()`` returns -- most
-    sensors (including ``synth.sensor.SensorModel``'s) report one uniform
-    black level across all 4 positions, so a mean is exact for the common
-    case and a reasonable approximation otherwise.
+    from raw"), mapped to R/G1/G2/B via ``raw.black_level_by_channel`` and
+    subtracted per-channel -- *not* a flat ``mean(black_level)`` scalar.
+    ``RawFrame.black_level``'s 4 values are indexed by the raw file's own
+    CFA tile phase, not necessarily the R/G1/G2/B plane names
+    ``raw.planes()`` returns, and some sensors report a genuinely different
+    black level per channel (the two green amplifier chains, most
+    commonly); ``raw.black_level_by_channel``'s docstring is the one place
+    that mapping is done correctly, and ``camera/bias.py``,
+    ``camera/chart.py`` and ``camera/color.py`` all use it for exactly this
+    reason -- a flat mean here would quietly bias every camera-backend
+    display measurement whenever the per-channel black levels differ.
 
     Dividing by exposure time gives *relative* luminance across patches
     shot at different shutter speeds (design §5.2: "camera exposure
@@ -99,12 +104,16 @@ def frame_to_raw_rgb(frame) -> tuple:
     statement calls out needing a cross-check against another backend.
     """
     planes = rawmod.planes(frame)
-    black = float(np.mean(frame.black_level)) if frame.black_level else 0.0
+    black = (
+        rawmod.black_level_by_channel(frame)
+        if frame.black_level
+        else {"R": 0.0, "G1": 0.0, "G2": 0.0, "B": 0.0}
+    )
     exposure_s = frame.meta.exposure_s or 1.0
-    r = (_central_roi_mean(planes["R"]) - black) / exposure_s
-    g = (_central_roi_mean(planes["G1"]) + _central_roi_mean(planes["G2"])) / 2.0 - black
-    g = g / exposure_s
-    b = (_central_roi_mean(planes["B"]) - black) / exposure_s
+    r = (_central_roi_mean(planes["R"]) - black["R"]) / exposure_s
+    g = (_central_roi_mean(planes["G1"]) - black["G1"]) + (_central_roi_mean(planes["G2"]) - black["G2"])
+    g = (g / 2.0) / exposure_s
+    b = (_central_roi_mean(planes["B"]) - black["B"]) / exposure_s
     return (r, g, b)
 
 

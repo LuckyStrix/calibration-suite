@@ -46,8 +46,21 @@ def spectrum_to_xyz(wavelengths, values) -> np.ndarray:
     (zero outside the measured range) before integrating -- a DIY
     spectrophotometer's native sampling rarely matches the CMF grid
     exactly.
+
+    ``wavelengths`` is sorted (ascending) before interpolation: some
+    spectrophotometer export tools write descending wavelength columns
+    (830 -> 360), and ``numpy.interp`` silently assumes its ``xp`` argument
+    is already sorted -- fed a descending array it returns garbage (in
+    practice, all zeros for a range-clamped patch spectrum) with no
+    warning or error, which is exactly the "plausible-looking wrong
+    number" this suite exists to catch.
     """
     import colour
+
+    wavelengths = np.asarray(wavelengths, dtype=np.float64)
+    values = np.asarray(values, dtype=np.float64)
+    order = np.argsort(wavelengths)
+    wavelengths, values = wavelengths[order], values[order]
 
     cmfs = colour.MSDS_CMFS[_CMFS_NAME]
     grid = cmfs.wavelengths

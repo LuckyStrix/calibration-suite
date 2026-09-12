@@ -74,6 +74,22 @@ def test_spectrum_to_xyz_of_d65_like_flat_spectrum_is_near_white():
     assert y == pytest.approx(1 / 3, abs=0.03)
 
 
+def test_spectrum_to_xyz_is_order_independent_of_wavelength_sorting():
+    # Some spectrophotometer export tools write wavelength columns in
+    # descending order (830 -> 360). numpy.interp silently assumes its xp
+    # argument is ascending; fed a descending array it produces garbage
+    # (verified: all-zero XYZ for a real, non-zero spectrum) rather than
+    # raising, which would otherwise either quietly zero out a real
+    # reading or (for a partially-sorted/jittered wavelength column)
+    # produce a numerically wrong-but-plausible XYZ.
+    wavelengths = np.arange(380, 731, 5)
+    values = np.ones_like(wavelengths, dtype=np.float64)
+    xyz_ascending = spectromod.spectrum_to_xyz(wavelengths, values)
+    xyz_descending = spectromod.spectrum_to_xyz(wavelengths[::-1], values[::-1])
+    assert xyz_descending == pytest.approx(xyz_ascending)
+    assert xyz_ascending[1] > 0
+
+
 def test_read_spectrum_csv_round_trip(tmp_path):
     path = tmp_path / "spec.csv"
     path.write_text("wavelength,value\n400,0.1\n500,0.5\n600,0.9\n", encoding="utf-8")
@@ -161,3 +177,45 @@ def test_frame_to_raw_rgb_black_subtracted_and_exposure_normalized():
     assert r == pytest.approx((300 - 100) / 2.0)
     assert g == pytest.approx(((200 - 100) + (220 - 100)) / 2.0 / 2.0)
     assert b == pytest.approx((500 - 100) / 2.0)
+
+
+def test_frame_to_raw_rgb_uses_per_channel_black_not_a_flat_mean():
+    """raw.py's own convention (and CLAUDE.md's documented fix in
+    camera/bias.py, camera/chart.py, camera/color.py) is that
+    ``RawFrame.black_level``'s 4 values must be mapped to R/G1/G2/B via
+    ``raw.black_level_by_channel`` before use -- a plain ``mean(black_level)``
+    silently biases every channel whenever the sensor's black level isn't
+    identical across all 4 tile positions (real on some CMOS designs, per
+    that function's own docstring). ``frame_to_raw_rgb`` was the one
+    remaining call site still doing the flat-mean version, which biases
+    every camera-backend display measurement -- the exact "plausible-
+    looking wrong number" this suite exists to prevent, since the result
+    is still a normal-looking float, just quietly off by the difference
+    between a channel's own black level and the 4-way average.
+    """
+    from calsuite.raw import FrameMeta, RawFrame, black_level_by_channel
+
+    cfa = np.zeros((8, 8), dtype=np.uint16)
+    cfa[0::2, 0::2] = 300  # R
+    cfa[0::2, 1::2] = 250  # G1
+    cfa[1::2, 0::2] = 250  # G2
+    cfa[1::2, 1::2] = 600  # B
+    # Distinct per-position black levels (raster order at the absolute
+    # origin: R, G1, G2, B, since visible starts at (0, 0) -- both even).
+    frame = RawFrame(
+        cfa=cfa,
+        pattern="RGGB",
+        visible=(slice(0, 8), slice(0, 8)),
+        black_level=(100.0, 120.0, 90.0, 400.0),
+        white_level=1023.0,
+        meta=FrameMeta(exposure_s=2.0),
+        path="<test>",
+        sha256="",
+    )
+    black = black_level_by_channel(frame)
+    assert black == {"R": 100.0, "G1": 120.0, "G2": 90.0, "B": 400.0}
+
+    r, g, b = cameramod.frame_to_raw_rgb(frame)
+    assert r == pytest.approx((300 - black["R"]) / 2.0)
+    assert g == pytest.approx(((250 - black["G1"]) + (250 - black["G2"])) / 2.0 / 2.0)
+    assert b == pytest.approx((600 - black["B"]) / 2.0)

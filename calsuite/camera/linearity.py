@@ -25,19 +25,31 @@ def _black_for(black_dn, channel: str) -> float:
     return black_dn[channel] if isinstance(black_dn, dict) else black_dn
 
 
-def _analyze_channel(points: list, white_level: float) -> dict:
+def _analyze_channel(points: list, white_level: float, black: float = 0.0) -> dict:
     """``points``: ``[(exposure_s, mean_dn), ...]`` for one channel, any
-    order. Returns a dict with the baseline fit, per-point deviation, the
-    linear range, and saturation DN."""
+    order -- ``mean_dn`` already black-subtracted by the caller. Returns a
+    dict with the baseline fit, per-point deviation, the linear range, and
+    saturation DN.
+
+    ``black``: this channel's own black level, DN -- needed here because
+    ``points``' means are black-subtracted but ``white_level`` is not.
+    Comparing a black-subtracted mean directly against
+    ``LINEARITY_CLIP_FRACTION * white_level`` (the raw/absolute scale) is
+    wrong: a fully saturated pixel's black-subtracted mean tops out at
+    ``white_level - black``, not ``white_level``, so the clip threshold
+    must be taken as a fraction of that same black-subtracted range or a
+    genuinely clipped point never crosses it.
+    """
     points = sorted(points, key=lambda p: p[0])
     exposures = np.array([p[0] for p in points])
     means = np.array([p[1] for p in points])
 
-    clip_thresh = LINEARITY_CLIP_FRACTION * white_level
+    signal_range = white_level - black
+    clip_thresh = LINEARITY_CLIP_FRACTION * signal_range
     unclipped_mask = means < clip_thresh
     n_clipped = int(np.count_nonzero(~unclipped_mask))
 
-    low_mask = unclipped_mask & (means < LINEARITY_LOW_SIGNAL_FRACTION * white_level)
+    low_mask = unclipped_mask & (means < LINEARITY_LOW_SIGNAL_FRACTION * signal_range)
     if np.count_nonzero(low_mask) < 2:
         # Not enough low-signal points to anchor a baseline -- fall back to
         # every unclipped point rather than refusing outright; the caller
@@ -107,7 +119,7 @@ def analyze_linearity(frames: list, black_dn, gain_e_per_dn=None) -> Analysis:
 
     channels_result = {}
     for ch in CHANNELS:
-        result = _analyze_channel(per_channel_points[ch], white_level)
+        result = _analyze_channel(per_channel_points[ch], white_level, _black_for(black_dn, ch))
         if gain_e_per_dn is not None:
             gain = gain_e_per_dn[ch] if isinstance(gain_e_per_dn, dict) else gain_e_per_dn
             # saturation_dn is the absolute (not black-subtracted) white

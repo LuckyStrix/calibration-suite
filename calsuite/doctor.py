@@ -166,9 +166,16 @@ def check_profiles_without_recent_validation(st: storemod.Store) -> list:
     for record in st.all(kind="display.profile"):
         by_device.setdefault(record.device["id"], []).append(record)
     for device_id, records in sorted(by_device.items()):
-        latest_profile = max(records, key=lambda r: r.created)
-        if latest_profile.status != "ok":
+        # The latest *passing* profile build is what would actually be
+        # installed -- a later refused attempt (a re-profile that failed)
+        # doesn't uninstall the last good one, so picking the literal
+        # latest record here would let a later refusal silently mask a
+        # real "installed but never (re)validated" finding for the
+        # profile that's still in use.
+        ok_records = [r for r in records if r.status == "ok"]
+        if not ok_records:
             continue
+        latest_profile = max(ok_records, key=lambda r: r.created)
         newer_passing_validation = any(
             r.created > latest_profile.created and r.status == "ok"
             for r in st.all(kind="display.validation", device_id=device_id)

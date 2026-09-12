@@ -105,6 +105,20 @@ def test_check_profiles_without_recent_validation_silent_when_validated_after(tm
     assert doctor.check_profiles_without_recent_validation(st) == []
 
 
+def test_check_profiles_without_recent_validation_fires_when_later_attempt_was_refused(tmp_path):
+    # A later re-profile attempt that failed must not mask the fact that
+    # the last *good* profile (still the one actually installed) has no
+    # recent validation -- picking the literal latest record regardless of
+    # status used to skip this check entirely once any newer refused
+    # attempt existed.
+    st = storemod.Store(tmp_path)
+    st.save(_record("display.profile", DISPLAY, created="20250101T000000Z", status="ok"))
+    st.save(_record("display.profile", DISPLAY, created="20250201T000000Z", status="refused"))
+    findings = doctor.check_profiles_without_recent_validation(st)
+    assert len(findings) == 1
+    assert DISPLAY["id"] in findings[0].message
+
+
 def test_check_unsuperseded_refusals_fires(tmp_path):
     st = storemod.Store(tmp_path)
     st.save(_record("camera.ptc", CAMERA, created=storemod.utcnow_stamp(), status="refused"))
