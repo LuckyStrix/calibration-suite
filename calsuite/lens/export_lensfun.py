@@ -80,11 +80,16 @@ def build_xml(
             "model": "pa",
             "focal": f"{entry['focal']:.1f}",
             "aperture": f"{entry['aperture']:.1f}",
-            "distance": f"{entry['distance']:.2f}",
-            "k1": f"{entry['k1']:.6f}",
-            "k2": f"{entry['k2']:.6f}",
-            "k3": f"{entry['k3']:.6f}",
         }
+        # "distance" is omitted entirely when we never measured one, rather
+        # than writing a fabricated value -- see export_records's comment
+        # on why omission (not a refusal) is what lensfun's own schema
+        # allows for this attribute.
+        if entry.get("distance") is not None:
+            attrs["distance"] = f"{entry['distance']:.2f}"
+        attrs["k1"] = f"{entry['k1']:.6f}"
+        attrs["k2"] = f"{entry['k2']:.6f}"
+        attrs["k3"] = f"{entry['k3']:.6f}"
         ET.SubElement(calibration_el, "vignetting", attrs)
 
     ET.indent(root, space="    ")
@@ -125,14 +130,26 @@ def export_records(
         pa = record.result.get("pa")
         if pa is None:
             continue
-        vignetting.append(
-            {
-                "focal": float(record.conditions.get("focal_mm") or 0.0),
-                "aperture": float(record.conditions.get("aperture") or 0.0),
-                "distance": float(record.conditions.get("focus_distance_m") or 0.0),
-                **pa,
-            }
-        )
+        entry = {
+            "focal": float(record.conditions.get("focal_mm") or 0.0),
+            "aperture": float(record.conditions.get("aperture") or 0.0),
+            **pa,
+        }
+        distance = record.conditions.get("focus_distance_m")
+        # lensfun's schema treats "distance" as a genuinely optional
+        # <vignetting> attribute (libs/lensfun/database.cpp's element
+        # handler has no "required" check for it, unlike "model"/"focal"/
+        # "aperture" -- an absent attribute just leaves lfLensCalibVignetting
+        # ::Distance at its memset-to-0 default). Since that default is
+        # numerically identical to writing a fabricated "0.00", omitting the
+        # attribute when we have no measured distance is the one option
+        # that doesn't assert a false, specific number in an exported file
+        # (house rule 2, docs/design.md §4.1's "store the distance in the
+        # record") -- so this key is only added when `_cmd_flats --distance`
+        # actually recorded one.
+        if distance is not None:
+            entry["distance"] = float(distance)
+        vignetting.append(entry)
 
     return build_xml(
         lens_model=lens_model,

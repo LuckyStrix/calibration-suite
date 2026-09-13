@@ -207,6 +207,12 @@ def _cmd_flats(args) -> int:
     analysis = flatsmod.self_calibrate_flat(planes, poses)
 
     conditions = {"focal_mm": frames[0].meta.focal, "aperture": args.aperture}
+    if args.distance is not None:
+        conditions["focus_distance_m"] = args.distance
+    conditions["focus_distance_caveat"] = (
+        "vignetting can change with focus distance, same as distortion (docs/design.md §4.1) -- "
+        "this record is only valid at the distance above"
+    )
     record = store.Record.from_analysis(
         kind="lens.flats",
         device=lens_ref.to_dict(),
@@ -387,6 +393,7 @@ def register(subparsers) -> None:
         required=True,
         help="comma-separated angle[:shift_u:shift_v] per raw file, in filename order, e.g. '0,90:0.05,180,270:0:0.05'",
     )
+    flats_p.add_argument("--distance", type=float, default=None, help="focus distance in meters")
     flats_p.set_defaults(func=_cmd_flats)
 
     mtf_p = sub.add_parser("mtf", help="slanted-edge e-SFR field grid")

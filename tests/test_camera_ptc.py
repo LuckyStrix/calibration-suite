@@ -5,12 +5,15 @@ from calsuite.camera import ptc
 from calsuite.synth import sensor as synth_sensor
 
 
-def _pairs_at_levels(signal_e_levels, gain, read_noise_e, black_dn, exposure_s=0.01, seed=0, shape=(256, 256)):
+def _pairs_at_levels(
+    signal_e_levels, gain, read_noise_e, black_dn, exposure_s=0.01, seed=0, shape=(256, 256), black_dn_by_channel=None
+):
     model = synth_sensor.SensorModel(
         shape=shape,
         gain_e_per_dn=gain,
         read_noise_e=read_noise_e,
         black_dn=black_dn,
+        black_dn_by_channel=black_dn_by_channel,
         prnu_std=0.0,
         dsnu_std_e_per_s=0.0,
         hot_pixel_fraction=0.0,
@@ -54,6 +57,28 @@ def test_gain_and_read_noise_recovered_within_design_budget():
         # Clamped at 0 rather than negative when the noisy intercept dips
         # below zero (see the comment above) -- still a valid outcome, not
         # a bug, so this only bounds the upper side.
+        assert 0 <= fit["read_noise_e"] < read_noise_e * 3
+
+
+def test_gain_recovered_correctly_with_per_channel_black_dn():
+    """analyze_ptc already black-subtracts per channel via `_black_for`
+    (a dict black_dn, matching what camera.bias would hand it in real
+    usage) rather than a flat mean -- and since Var(A-B) cancels any
+    constant offset entirely regardless, a per-channel black level should
+    never bias gain even if it were subtracted wrong. This pins both: pass
+    the real per-channel truth and check gain still lands in the design
+    budget for every channel, exactly like the flat-black-level test above."""
+    gain = 2.5
+    read_noise_e = 3.0
+    black_dn_by_channel = {"R": 500.0, "G1": 508.0, "G2": 516.0, "B": 524.0}
+    levels = np.linspace(500, 32000, 24)
+    pairs = _pairs_at_levels(levels, gain, read_noise_e, 512.0, black_dn_by_channel=black_dn_by_channel)
+
+    a = ptc.analyze_ptc(pairs, black_dn_by_channel)
+    assert a.ok, a.refusals
+    for _ch, data in a.result["channels"].items():
+        fit = data["fit"]
+        assert fit["gain_e_per_dn"] == pytest.approx(gain, rel=0.03)
         assert 0 <= fit["read_noise_e"] < read_noise_e * 3
 
 

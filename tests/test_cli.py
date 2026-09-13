@@ -117,3 +117,59 @@ def test_demo_help_works(capsys):
         cli.main(["demo", "--help"])
     assert exc.value.code == 0
     capsys.readouterr()
+
+
+def test_demo_cli_exit_code_reflects_run_demo_warnings(monkeypatch, tmp_path, capsys):
+    """`_cmd_demo` used to return 0 whenever *any* area produced a report,
+    even if others raised -- `calsuite demo` could print "wrote ..." with
+    several report lines and still exit 0 with failures buried in the
+    warning list. The exit code must instead reflect whether `run_demo`
+    reported any warnings at all (its own return value already lists every
+    failure mode: a raised exception, an unexpected `_run_cli` exit code, a
+    report that was never produced, an internal consistency check that
+    didn't hold)."""
+    from calsuite import demo as demomod
+
+    index_path = tmp_path / "index.html"
+    index_path.write_text("<html></html>", encoding="utf-8")
+
+    def _fake_run_demo(out_dir, *, warnings):
+        return {"index": index_path, "reports": {"Sensor": tmp_path / "sensor.html", "Lens": None}, "warnings": warnings}
+
+    monkeypatch.setattr(demomod, "run_demo", lambda out_dir: _fake_run_demo(out_dir, warnings=[]))
+    rc = cli.main(["demo", "--out", str(tmp_path)])
+    assert rc == 0
+
+    monkeypatch.setattr(
+        demomod, "run_demo", lambda out_dir: _fake_run_demo(out_dir, warnings=["lens demo failed: RuntimeError('boom')"])
+    )
+    rc = cli.main(["demo", "--out", str(tmp_path)])
+    assert rc == 1
+    out = capsys.readouterr().out
+    lines = [line for line in out.splitlines() if line.strip()]
+    # the failure list is the last thing printed, not buried above a
+    # misleadingly-successful-looking report listing.
+    assert lines[-1].lstrip().startswith("WARNING:")
+
+
+def test_demo_cli_exits_nonzero_when_an_area_is_actually_forced_to_fail(monkeypatch, tmp_path, capsys):
+    """Same fix, exercised end to end through the real `run_demo` pipeline
+    (not a faked result): force one real area (`_run_display`) to raise,
+    and confirm the areas that don't depend on it still run (resilience is
+    still correct -- see demo.py's own module docstring), but the CLI's
+    exit code is now truthful about the failure."""
+    from calsuite import demo as demomod
+
+    def _boom(out_dir, warnings):
+        raise RuntimeError("forced failure for this test")
+
+    monkeypatch.setattr(demomod, "_run_display", _boom)
+
+    rc = cli.main(["demo", "--out", str(tmp_path)])
+    assert rc == 1
+
+    out = capsys.readouterr().out
+    lines = [line for line in out.splitlines() if line.strip()]
+    assert any("display demo failed" in line for line in lines)
+    assert "Sensor:" in out  # the other areas still ran and still get reported
+    assert lines[-1].lstrip().startswith("WARNING:")

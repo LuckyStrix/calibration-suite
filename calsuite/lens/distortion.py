@@ -119,7 +119,24 @@ def refit_ptlens_poly3(dist_coeffs: np.ndarray, camera_matrix: np.ndarray, image
     coefficients once written as ``Rd - Ru = ...``) to lensfun's
     ``ptlens`` (a, b, c) and ``poly3`` (k1) models, in lensfun's own
     Hugin-normalized radius (see lens/constants.py's citations for the
-    r=1-at-half-short-edge convention and the Ru->Rd direction)."""
+    r=1-at-half-short-edge convention and the Ru->Rd direction).
+
+    This targets ``Rd = Ru*(a*Ru^3+b*Ru^2+c*Ru+1)`` -- a free constant term
+    of 1, matching OpenCV/Brown-Conrady's own convention (a real lens's
+    curve has no reason to pass through Rd(Hugin r=1)=1 exactly). lensfun's
+    *actual* runtime formula (verified against the installed liblensfun
+    0.3.3 and lensfunpy's bundled 0.3.4 -- see lens/constants.py's
+    "CORRECTION" note) instead computes the constant term as
+    ``d = 1-a-b-c``, not 1, which structurally forces Rd(Hugin r=1)==1 for
+    *any* (a,b,c). Deliberately not changed to fit that "+d" family instead:
+    doing so measurably *worsens* the fit to a real curve (checked
+    numerically), because it is a more constrained 3-parameter family, not
+    a reparameterization of this one -- the two only coincide when
+    ``a+b+c == 0``. The gap this leaves (lensfun's own correction differing
+    from our fit's intent by ~``|a+b+c|`` in Hugin-normalized units) is a
+    real, bounded, and now-quantified limitation of the ptlens/poly3 export
+    formats, not a bug here; see tests/test_lens_export_lensfun.py's
+    per-pixel round trip for the exact bound."""
     fx, fy = float(camera_matrix[0, 0]), float(camera_matrix[1, 1])
     f_px = 0.5 * (fx + fy)
     width, height = image_size

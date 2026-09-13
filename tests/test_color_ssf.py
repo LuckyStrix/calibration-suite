@@ -85,6 +85,47 @@ def test_fit_from_ssf_produces_3x3_and_low_error_for_luther_ssf():
     assert analysis.result["white_patch_raw_rgb"] is not None
 
 
+def test_camera_response_matches_colour_sciences_own_spectral_integration():
+    """Cross-check against an independent implementation (task item 4):
+    ``camera_response``'s SSF*illuminant*reflectance integration is
+    hand-rolled (plain ``np.trapezoid``), unlike every other spectral-to-
+    tristimulus step in this module, which already calls straight into
+    ``colour``. Treating our own SSF as a substitute "cmfs" lets
+    ``colour.sd_to_XYZ``'s own ``method="Integration"`` (a different
+    quadrature rule -- a fixed-interval Riemann sum, not trapezoidal, and
+    a completely separate code path/library) integrate the exact same
+    physical quantity, so agreement here is a real check, not a
+    re-assertion of our own arithmetic.
+
+    ``colour.sd_to_XYZ``'s own scale convention differs from ours by a
+    constant factor of 100 -- confirmed empirically (``camera_response``'s
+    own docstring already says its scale is arbitrary, so there's nothing
+    to "get right" about matching it exactly). What a real integration bug
+    -- wrong wavelength grid/alignment, a missing illuminant or
+    reflectance term, a stray transpose -- would NOT preserve is that
+    ratio being the *same, close to 1.00* value for all three channels and
+    multiple reflectance patches, which is what's actually asserted.
+    """
+    import colour
+
+    illum = colour.SDS_ILLUMINANTS["D65"]
+    msds = colour.MultiSpectralDistributions(
+        np.column_stack([NARROW_BAND_SSF.r, NARROW_BAND_SSF.g, NARROW_BAND_SSF.b]),
+        domain=NARROW_BAND_SSF.wavelengths,
+        labels=["R", "G", "B"],
+    )
+    shape = colour.SpectralShape(float(_WL[0]), float(_WL[-1]), float(_WL[1] - _WL[0]))
+
+    for patch in ("red", "green", "blue", "light skin", "dark skin"):
+        refl = colour.SDS_COLOURCHECKERS["ISO 17321-1"][patch]
+        ours = np.array(ssf.camera_response(NARROW_BAND_SSF, illum, refl))
+        colours_own = np.array(colour.sd_to_XYZ(refl, msds, illum, k=1.0, method="Integration", shape=shape)) * 100.0
+        # Residual is quadrature-rule difference (trapezoidal vs. colour's
+        # fixed-interval sum) on a 5nm grid -- empirically well under 1%
+        # for every patch checked while writing this test.
+        assert (colours_own / ours) == pytest.approx(1.0, rel=0.02)
+
+
 def test_load_ssf_csv_round_trip(tmp_path):
     path = tmp_path / "ssf.csv"
     lines = ["nm,r,g,b"]

@@ -40,7 +40,17 @@ class SensorModel:
 
     gain_e_per_dn: float = 2.0  # electrons per output DN
     read_noise_e: float = 3.0  # read noise, electrons RMS
-    black_dn: float = 512.0  # bias level, DN
+    black_dn: float = 512.0  # bias level, DN -- used on all 4 CFA channels unless black_dn_by_channel overrides
+    black_dn_by_channel: dict | tuple | None = None
+    # Per-CFA-channel bias level, overriding `black_dn`: a dict keyed by
+    # canonical channel name ("R"/"G1"/"G2"/"B") or a plain 4-tuple in that
+    # (R, G1, G2, B) order. Real on some CMOS designs, where the two green
+    # amplifier chains (G1/G2) read a few DN apart from each other and from
+    # R/B (raw.black_level_by_channel's docstring) -- before this existed,
+    # every synthetic frame had one scalar black_dn on all four positions,
+    # so no test in the suite could exercise a sensor whose channels
+    # genuinely disagree. Leave at the default `None` to keep every
+    # existing flat-`black_dn` frame byte-for-byte unchanged.
     full_well_e: float = 40000.0  # electrons at saturation
     dark_current_e_per_s_at_20c: float = 0.05  # e-/s at 20C; see dark_current()
     pattern: str = "RGGB"
@@ -59,11 +69,21 @@ class SensorModel:
         """Dark current at `temp_c`, e-/s, using the ~6C-doubling rule."""
         return self.dark_current_e_per_s_at_20c * 2.0 ** ((temp_c - 20.0) / DARK_CURRENT_DOUBLING_C)
 
+    def black_reference(self) -> float:
+        """The single scalar black level used for the frame's shared
+        clipping ceiling (`white_level`) -- the mean of the per-channel
+        values when `black_dn_by_channel` is given, otherwise plain
+        `black_dn`. A real sensor's analog-to-digital full scale is shared
+        across channels; only the bias offset below it varies per channel."""
+        if self.black_dn_by_channel is None:
+            return self.black_dn
+        return float(np.mean(list(_resolve_black_by_channel(self).values())))
+
     @property
     def white_level(self) -> float:
         if self.white_level_dn is not None:
             return self.white_level_dn
-        return self.black_dn + self.full_well_e / self.gain_e_per_dn
+        return self.black_reference() + self.full_well_e / self.gain_e_per_dn
 
     @classmethod
     def r100_like(cls, **overrides) -> SensorModel:
@@ -75,6 +95,85 @@ class SensorModel:
         defaults = dict(shape=R100_VISIBLE_SHAPE, top_margin=R100_TOP_MARGIN, left_margin=R100_LEFT_MARGIN)
         defaults.update(overrides)
         return cls(**defaults)
+
+
+_CHANNEL_NAMES = ("R", "G1", "G2", "B")
+
+
+def _plane_positions(pattern: str) -> dict:
+    """Which (row-phase, col-phase) in a 2x2 CFA tile is R/G1/G2/B -- a
+    local copy of ``raw._plane_positions``'s convention (first 'G' in
+    raster order is G1, second is G2), same as ``synth/color.py``'s
+    ``plane_positions``: re-deriving 6 lines locally beats reaching into
+    another module's underscore-prefixed private API for it."""
+    if len(pattern) != 4:
+        raise ValueError(f"expected a 2x2 (4-char) CFA pattern, got {pattern!r}")
+    positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
+    names, g_count = {}, 0
+    for pos, ch in zip(positions, pattern, strict=True):
+        if ch == "G":
+            g_count += 1
+            names[pos] = f"G{g_count}"
+        else:
+            names[pos] = ch
+    return names
+
+
+def _resolve_black_by_channel(model: SensorModel) -> dict:
+    """``{"R": ..., "G1": ..., "G2": ..., "B": ...}`` -- `model.black_dn`
+    broadcast to all four channels when `model.black_dn_by_channel` is
+    `None` (the always-supported default), otherwise `black_dn_by_channel`
+    itself, accepting either a dict keyed by canonical channel name or a
+    plain 4-tuple/list in (R, G1, G2, B) order."""
+    spec = model.black_dn_by_channel
+    if spec is None:
+        return {name: model.black_dn for name in _CHANNEL_NAMES}
+    if isinstance(spec, dict):
+        if set(spec) != set(_CHANNEL_NAMES):
+            raise ValueError(f"black_dn_by_channel dict must have exactly keys {set(_CHANNEL_NAMES)}, got {set(spec)!r}")
+        return {name: float(value) for name, value in spec.items()}
+    values = tuple(spec)
+    if len(values) != 4:
+        raise ValueError("black_dn_by_channel must be a dict keyed R/G1/G2/B, or a 4-tuple (R, G1, G2, B)")
+    return dict(zip(_CHANNEL_NAMES, (float(v) for v in values), strict=True))
+
+
+def _black_level_map(pattern: str, top: int, left: int, total_rows: int, total_cols: int, channel_black: dict) -> np.ndarray:
+    """Per-pixel black level across the *entire* physical array, margins
+    included -- the CFA color filter continues over the masked margin
+    exactly like the visible area (the margin sees no light, not no
+    filter), so a channel's black offset applies wherever that channel's
+    amplifier reads out, not just inside `visible`. `pattern` is anchored
+    at the visible origin (`top`, `left`), matching `RawFrame.pattern`'s
+    own convention, so each phase's absolute-array parity is shifted by
+    (-top, -left) before naming it -- the same `(row - top) % 2` rule
+    ``raw._channel_at`` uses."""
+    positions = _plane_positions(pattern)
+    black_map = np.empty((total_rows, total_cols), dtype=np.float64)
+    for dr in (0, 1):
+        for dc in (0, 1):
+            phase = ((dr - top) % 2, (dc - left) % 2)
+            name = positions[phase]
+            black_map[dr::2, dc::2] = channel_black[name]
+    return black_map
+
+
+def _black_level_tuple(pattern: str, top: int, left: int, channel_black: dict) -> tuple:
+    """`RawFrame.black_level`'s 4 values, in the absolute-(0,0)-origin
+    raster order real raw files use (``raw.black_level_by_channel``'s
+    docstring) -- the mirror image of that function: given a value per
+    canonical channel name, produce the positional tuple a real loader
+    would have produced. The row/col-shift step is its own inverse (adding
+    the same 0/1 shift twice mod 2 is the identity), so reusing it here
+    exactly undoes what ``black_level_by_channel`` does to read it back."""
+    positions = _plane_positions(pattern)
+    row_shift, col_shift = top % 2, left % 2
+    absolute_positions = ((0, 0), (0, 1), (1, 0), (1, 1))  # raster order -- black_level's own order
+    values = []
+    for r, c in absolute_positions:
+        visible_pos = ((r + row_shift) % 2, (c + col_shift) % 2)
+        values.append(channel_black[positions[visible_pos]])
+    return tuple(values)
 
 
 def _fixed_pattern_maps(model: SensorModel):
@@ -139,7 +238,9 @@ def frame(
 
     electrons += rng.normal(0.0, model.read_noise_e, size=electrons.shape)
 
-    dn = model.black_dn + electrons / model.gain_e_per_dn
+    channel_black = _resolve_black_by_channel(model)
+    black_map = _black_level_map(model.pattern, top, left, total_rows, total_cols, channel_black)
+    dn = black_map + electrons / model.gain_e_per_dn
 
     if model.row_banding_std_dn > 0:
         # A per-row additive offset that repeats across every column in a
@@ -160,7 +261,7 @@ def frame(
         cfa=cfa,
         pattern=model.pattern,
         visible=visible,
-        black_level=(float(model.black_dn),) * 4,
+        black_level=_black_level_tuple(model.pattern, top, left, channel_black),
         white_level=float(white_level),
         meta=meta,
         path="<synthetic>",

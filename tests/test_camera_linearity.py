@@ -39,6 +39,39 @@ def test_full_well_and_linear_range_recovered():
         assert data["full_well_e"] == pytest.approx(full_well_e, rel=0.05)
 
 
+def test_full_well_recovered_per_channel_with_per_channel_black_dn():
+    """analyze_linearity already black-subtracts each channel with its own
+    `_black_for(black_dn, ch)` (a dict, matching what camera.bias's
+    black_level_dn would hand it in real usage), including in the
+    saturation_dn -> full_well_e conversion's own black term -- this pins
+    that it stays correct per channel when the channels' true black levels
+    genuinely differ, not just when they happen to share one scalar."""
+    gain = 2.0
+    black_dn_by_channel = {"R": 500.0, "G1": 508.0, "G2": 516.0, "B": 524.0}
+    full_well_e = 20000.0
+    flux = 4000.0
+    exposures = np.linspace(0.2, 8.0, 12)
+    model = synth_sensor.SensorModel(
+        shape=(128, 128),
+        gain_e_per_dn=gain,
+        black_dn_by_channel=black_dn_by_channel,
+        full_well_e=full_well_e,
+        prnu_std=0.0,
+        dsnu_std_e_per_s=0.0,
+        hot_pixel_fraction=0.0,
+        read_noise_e=3.0,
+    )
+    rng = np.random.default_rng(0)
+    frames = [synth_sensor.frame(model, exposure_s=t, flux_e_per_s=flux, temp_c=20.0, rng=rng) for t in exposures]
+
+    a = linearity.analyze_linearity(frames, black_dn_by_channel, gain_e_per_dn=gain)
+    assert a.ok, a.refusals
+    for _ch, data in a.result["channels"].items():
+        assert data["linear_range_n_points"] >= 3
+        assert data["max_deviation_pct_in_range"] <= linearity.LINEARITY_DEVIATION_PCT
+        assert data["full_well_e"] == pytest.approx(full_well_e, rel=0.05)
+
+
 def test_refuses_with_too_few_points():
     frames = _flats(np.linspace(0.5, 2.0, 3), 1000.0)
     a = linearity.analyze_linearity(frames, 512.0)

@@ -11,12 +11,105 @@ tests (which only ever call ``export_lensfun.export_records``/
 
 from __future__ import annotations
 
-from calsuite import cli, store
+import numpy as np
+import pytest
+
+from calsuite import cli, raw as rawmod, store
 from calsuite.fit import Analysis
+from calsuite.lens import flats as flatsmod
+from calsuite.synth import lens as synthlens, sensor as synth_sensor
 
 
 def _device() -> dict:
     return {"kind": "lens", "model": "Test Lens 50mm", "id": "test-lens-50mm-unknown", "firmware": ""}
+
+
+def _write_flats_capture(tmp_path):
+    """A small (but non-degenerate -- angle+shift poses, per
+    lens/flats.py's condition-number check) self-calibrating-flat session,
+    written as ``.npz`` so ``lens/commands.py``'s real ``--from DIR`` path
+    (``_RAW_EXTENSIONS``) reads it exactly like a folder of real captures.
+    Mirrors ``demo.py::_run_lens``'s own flats session."""
+    model = synth_sensor.SensorModel(
+        shape=(180, 240), read_noise_e=2.0, gain_e_per_dn=2.0, black_dn=100.0,
+        prnu_std=0.0, dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0, full_well_e=2_000_000,
+    )
+    poses = [
+        flatsmod.Pose(0, 0, 0), flatsmod.Pose(90, 0.08, 0), flatsmod.Pose(180, 0, 0.08),
+        flatsmod.Pose(270, 0.08, 0.08), flatsmod.Pose(0, -0.06, 0.05), flatsmod.Pose(90, -0.05, -0.07),
+    ]
+    rng = np.random.default_rng(12)
+    folder = tmp_path / "flats_capture"
+    folder.mkdir()
+    for i, pose in enumerate(poses):
+        frame = synthlens.render_flat_pose(
+            model, [-0.35, 0.05], [0.0, 0.15, -0.10, -0.08, 0.02, -0.05], pose,
+            rng=rng, exposure_s=0.2, base_flux_e_per_s=3.0e4,
+        )
+        rawmod.save_npz(frame, folder / f"f{i:04d}.npz")
+    poses_str = ",".join(f"{p.angle_deg:g}:{p.shift_u:g}:{p.shift_v:g}" for p in poses)
+    return folder, poses_str
+
+
+def test_lens_flats_records_the_given_focus_distance(tmp_path, monkeypatch):
+    """`_cmd_flats` used to never capture a focus distance at all, so every
+    exported `<vignetting distance="...">` silently got a fabricated 0.00
+    from `export_records`'s `... or 0.0` fallback (house rule 2: no
+    fabricated numbers in an exported file). With the same `--distance` flag
+    `lens distortion` already has, the record's conditions carry the real
+    value and the export reflects it."""
+    records_dir = tmp_path / "records"
+    monkeypatch.setenv("CALSUITE_RECORDS", str(records_dir))
+    folder, poses_str = _write_flats_capture(tmp_path)
+
+    rc = cli.main(
+        ["lens", "flats", "--from", str(folder), "--aperture", "1.8", "--poses", poses_str, "--distance", "0.5"]
+    )
+    assert rc == 0
+
+    st = store.Store(records_dir)
+    records = list(st.all(kind="lens.flats"))
+    assert len(records) == 1
+    assert records[0].conditions["focus_distance_m"] == pytest.approx(0.5)
+    device_id = records[0].device["id"]
+
+    out_path = tmp_path / "out.xml"
+    rc = cli.main(["lens", "export", "--device-id", device_id, "--lens-model", "Test Lens 50mm", "--out", str(out_path)])
+    assert rc == 0
+    xml_text = out_path.read_text(encoding="utf-8")
+    assert "<vignetting" in xml_text
+    assert 'distance="0.50"' in xml_text
+
+
+def test_lens_flats_omits_distance_attribute_when_none_was_given(tmp_path, monkeypatch):
+    """Without `--distance`, the exporter must not invent one: no
+    `focus_distance_m` in the record's conditions, and no `distance`
+    attribute at all on the exported `<vignetting>` element -- not a
+    fabricated `distance="0.00"`. lensfun's own XML schema
+    (`libs/lensfun/database.cpp`'s `<vignetting>` element handler) has no
+    "required" check on `distance` (unlike `model`/`focal`/`aperture`), so
+    omitting it is what the format actually allows; a value it silently
+    defaults to zero internally either way is not a substitute for that
+    honesty in the file we write."""
+    records_dir = tmp_path / "records"
+    monkeypatch.setenv("CALSUITE_RECORDS", str(records_dir))
+    folder, poses_str = _write_flats_capture(tmp_path)
+
+    rc = cli.main(["lens", "flats", "--from", str(folder), "--aperture", "1.8", "--poses", poses_str])
+    assert rc == 0
+
+    st = store.Store(records_dir)
+    records = list(st.all(kind="lens.flats"))
+    assert len(records) == 1
+    assert "focus_distance_m" not in records[0].conditions
+    device_id = records[0].device["id"]
+
+    out_path = tmp_path / "out.xml"
+    rc = cli.main(["lens", "export", "--device-id", device_id, "--lens-model", "Test Lens 50mm", "--out", str(out_path)])
+    assert rc == 0
+    xml_text = out_path.read_text(encoding="utf-8")
+    assert "<vignetting" in xml_text
+    assert "distance=" not in xml_text
 
 
 def _save_ok_flats_record(records_dir, *, aperture: float = 1.8) -> None:

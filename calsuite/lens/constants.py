@@ -145,11 +145,49 @@ PRINT_DPI = 300
 # formulae map *undistorted* radius Ru to *distorted* radius Rd (matching
 # the manual's corrections.html page: "the formulae for distortion models...
 # map the undistorted coordinate to the distorted coordinate"):
-#   ptlens:  Rd = Ru * (a*Ru^3 + b*Ru^2 + c*Ru + 1)         [XML: a, b, c]
-#   poly3:   Rd = Ru * (1 + k1*Ru^2)                        [XML: k1]
+#   ptlens:  Rd = Ru * (a*Ru^3 + b*Ru^2 + c*Ru + d), d = 1-a-b-c  [XML: a,b,c]
+#   poly3:   Rd = Ru * ((1-k1) + k1*Ru^2)                         [XML: k1]
 #            (poly3 is exactly ptlens with a=0, c=0, b=k1 -- confirmed by
-#            mod-coord.cpp's own comment "The same applies to the poly3
-#            model, where a, b, c are 0, k1, 0.")
+#            comparing ``ModifyCoord_Dist_Poly3``'s ``one_minus_k1 + k1*ru2``
+#            with ``ModifyCoord_Dist_PTLens``'s ``a*ru2*r+b*ru2+c*r+d``, both
+#            in libs/lensfun/mod-coord.cpp.)
+#
+# CORRECTION (2026-09-12, closing the Wave 2B "lensfun export is never
+# verified to actually correct an image" gap): the constant term above is
+# **d = 1-a-b-c, not 1** -- i.e. lensfun's ptlens/poly3 models are
+# structurally pinned so that Rd == Ru exactly at the Hugin r=1 edge, for
+# *any* (a,b,c). An earlier version of this comment said "+ 1", sourced from
+# a copy of mod-coord.cpp fetched to /tmp in a previous session that turned
+# out to be from a much newer/unreleased lensfun source tree (it also had a
+# completely different, RealFocal/rescale_polynomial_coefficients-based
+# NormScale scheme with no equivalent in any released version). Verified
+# instead directly against both real, running copies used by this suite:
+# `/usr/share/lensfun/version_1` uses system liblensfun 0.3.3
+# (`dpkg -s liblensfun1`), and lensfunpy 1.18.0 bundles its own liblensfun
+# 0.3.4 (`lensfunpy.lensfun_version() == (0,3,4,0)`, in
+# `lensfunpy.libs/liblensfun-*.so.0.3.4`, NOT the system copy) -- fetched
+# `libs/lensfun/{modifier,mod-coord}.cpp` from github.com/lensfun/lensfun at
+# tags `v0.3.3` and `v0.3.4` directly: byte-identical between the two tags
+# for every function this suite depends on, so what lensfunpy actually runs
+# (0.3.4) matches what darktable/system tooling runs here (0.3.3).
+#
+# Consequence for `distortion.refit_ptlens_poly3`: it correctly targets the
+# "+1" convention (matching OpenCV/Brown-Conrady's own r=1-coefficient-of-1
+# convention -- a real lens's true curve has no reason to satisfy Rd(1)=1),
+# which is confirmed (see that function's docstring and
+# tests/test_lens_export_lensfun.py's per-pixel round trip) to be a *better*
+# approximation of a real distortion curve than forcing a+b+c=0 would be.
+# The two conventions coincide exactly only when a+b+c==0; lensfun's actual,
+# exported-XML-driven correction therefore carries a bounded, *explained*
+# systematic error of magnitude ~|a+b+c| * (Hugin-normalized radius) beyond
+# our own fit's residual -- not a bug in the fit, a real and now-quantified
+# limitation of the ptlens/poly3 export formats themselves. This is also
+# why the direction/model-family choice above ("+1", not "+d") is left
+# unchanged: switching the fit to target "+d" instead does not remove this
+# error, it relocates it (verified numerically) into a *worse* overall
+# approximation of the true curve, because it is a fundamentally more
+# constrained 3-parameter family, not a reparameterization of the same one.
+#
 # This is also OpenCV's own Brown-Conrady direction: distorted = undistorted
 # scaled by (1 + k1 r^2 + k2 r^4 + k3 r^6) + tangential terms, in the
 # camera's normalized (undistorted) coordinate system -- the same

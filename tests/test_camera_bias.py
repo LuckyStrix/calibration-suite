@@ -81,3 +81,36 @@ def test_odd_frame_dropped_not_crashing():
     a = bias.analyze_bias(frames)
     assert a.ok
     assert a.result["n_pairs"] == 2
+
+
+def test_per_channel_black_level_recovered_with_odd_margins():
+    """Checks the suspicion the bug hunt raised for analyze_bias too: with
+    a genuinely per-channel black level AND odd margins (so the visible
+    tile's phase differs from the absolute-origin tile black_level uses --
+    raw.black_level_by_channel's docstring), does analyze_bias still
+    recover each channel's own true value from both the visible area and
+    the optical-black margin, and compare it correctly against metadata?
+    It does -- analyze_bias already goes through raw.black_level_by_channel
+    rather than a flat mean, so this is a regression guard pinning that
+    correct behavior, not a bug fix."""
+    per_channel = {"R": 500.0, "G1": 508.0, "G2": 516.0, "B": 524.0}
+    model = synth_sensor.SensorModel(
+        shape=(64, 96),
+        top_margin=9,  # odd -- visible tile phase != absolute tile phase
+        left_margin=17,  # odd, and different parity than top_margin
+        black_dn_by_channel=per_channel,
+        read_noise_e=2.0,
+        gain_e_per_dn=2.0,
+        prnu_std=0.0,
+        dsnu_std_e_per_s=0.0,
+        hot_pixel_fraction=0.0,
+    )
+    rng = np.random.default_rng(11)
+    frames = [synth_sensor.frame(model, exposure_s=1e-4, flux_e_per_s=0.0, temp_c=20.0, rng=rng) for _ in range(6)]
+
+    a = bias.analyze_bias(frames)
+    assert a.ok, a.refusals
+    for ch, expected in per_channel.items():
+        assert a.result["black_level_dn"][ch] == pytest.approx(expected, abs=2.0)
+        assert a.result["black_level_metadata_dn"][ch] == pytest.approx(expected)
+        assert abs(a.result["black_level_discrepancy_dn"][ch]) < 3.0

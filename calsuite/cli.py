@@ -136,13 +136,25 @@ def _cmd_doctor(args) -> int:
 def _cmd_demo(args) -> int:
     from calsuite import demo as demomod
 
+    # demo.py::run_demo runs every area even if an earlier one blows up
+    # (demo.py's own module docstring: "one area's failure doesn't stop the
+    # others") -- that resilience is deliberate and stays. But this command's
+    # *exit code* used to only ask "did at least one area produce a report",
+    # so a run where three of six areas raised could still print "wrote ..."
+    # and exit 0. The truthful question is "did every area succeed", i.e.
+    # "is `warnings` empty" -- every failure mode `run_demo` can hit (an
+    # area's own exception, an unexpected `_run_cli` exit code, a
+    # never-produced report, an internal consistency check failing) already
+    # appends to `warnings`, so that list is exactly the pass/fail signal.
+    # Warnings are printed last (after every report line) either way, so
+    # they're the final thing on screen on a failing run.
     result = demomod.run_demo(args.out)
     print(f"wrote {result['index']}")
     for name, path in result["reports"].items():
         print(f"  {name}: {path if path else '(not produced)'}")
     for w in result["warnings"]:
         print(f"  WARNING: {w}")
-    return 0 if any(v is not None for v in result["reports"].values()) else 1
+    return 1 if result["warnings"] else 0
 
 
 # ---------------------------------------------------------------------------

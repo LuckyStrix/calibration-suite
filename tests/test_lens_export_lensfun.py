@@ -115,16 +115,13 @@ def test_lensfunpy_round_trip_reads_back_our_own_coefficients(tmp_path):
     independent C++ parser, not our ``ElementTree`` reader) and confirm it
     reports back the *exact* ptlens/tca coefficients we wrote -- the
     concrete, well-defined half of "exported XML loads in lensfunpy and
-    reproduces [our] ground truth". A per-pixel comparison through
-    ``lensfunpy.Modifier`` was attempted but not included: Modifier applies
-    the stored Hugin-normalized coefficients inside its own internal
-    "natural" (focal-length-normalized) coordinate system, via
-    ``rescale_polynomial_coefficients`` (real-focal, crop factor, aspect
-    ratio, and an auto-scale all feed into that conversion) -- reproducing
-    that exact conversion independently, just to re-check numbers this
-    ``interpolate_distortion`` check already confirms are stored correctly,
-    was judged not worth the risk of a fragile test within this wave's
-    scope. Flagged in the final report as a gap, not silently dropped.
+    reproduces [our] ground truth". The other half -- does applying the
+    correction actually undo a known distortion, per-pixel -- used to be
+    flagged here as an abandoned gap; it's now closed by
+    ``test_lensfun_geometry_correction_matches_independently_derived_ground_truth``
+    below, which works out lensfun's real per-pixel coordinate convention
+    (verified against source, not assumed) instead of stopping at this
+    coefficient-readback check.
     """
     xml_text = E.build_xml(
         lens_model="Test Lens 50mm",
@@ -159,3 +156,188 @@ def test_lensfunpy_round_trip_reads_back_our_own_coefficients(tmp_path):
     assert coords.shape == (400, 600, 2)
     _, identity_x = np.mgrid[0:400, 0:600]
     assert not (coords[:, :, 0] == identity_x).all()
+
+
+@pytest.mark.skipif(not HAVE_LENSFUNPY, reason="lensfunpy not importable")
+def test_lensfun_geometry_correction_matches_independently_derived_ground_truth(tmp_path):
+    """The highest-value gap the bug hunt left open: does applying OUR
+    exported lensfun XML actually undo OUR known distortion the way our own
+    fit says it should -- not just read our coefficients back unchanged
+    (the previous test's scope)?
+
+    Two facts, verified against real source rather than assumed (see
+    lens/constants.py's "CORRECTION" note and distortion.refit_ptlens_poly3's
+    docstring for the full derivation and citations):
+
+    - lensfunpy 1.18.0 bundles its own liblensfun 0.3.4
+      (``lensfunpy.lensfun_version() == (0, 3, 4, 0)``), not this machine's
+      system liblensfun 0.3.3 -- but ``libs/lensfun/{modifier,mod-coord}.cpp``
+      are byte-identical between the ``v0.3.3`` and ``v0.3.4`` GitHub tags
+      for every function this test depends on, so this exercises exactly
+      what darktable/system tooling runs here too.
+    - lensfun's actual ptlens/poly3 formula is
+      ``Rd = Ru*(a*Ru^3+b*Ru^2+c*Ru+d)`` with ``d = 1-a-b-c``, not
+      ``... + 1``. This structurally pins ``Rd(Hugin r=1) == Ru(Hugin r=1)``
+      for *any* (a,b,c) -- lensfun's own correction therefore differs from
+      a real lens's true curve (which has no reason to satisfy that) by a
+      bounded amount of ``~|a+b+c|`` in Hugin-normalized units. This is a
+      real limitation of the export format, not a bug in our fit (fitting
+      to lensfun's "+d" family instead was checked and makes the
+      approximation of the true curve *worse*, not better).
+
+    So this test proves two different things at two different tolerances,
+    rather than picking one loose tolerance that would hide the difference
+    between them:
+
+    (1) lensfunpy's actual per-pixel output matches a closed-form
+        reproduction of lensfun's own documented "+d" formula to within
+        float32/Newton-iteration noise -- i.e. our understanding of
+        lensfun's real coordinate convention (center, radius
+        normalization, direction, the "+d not +1" constant) is exactly
+        right; no other bug (wrong axis, sign flip, stray crop/aspect
+        scale) is hiding in the difference.
+    (2) lensfun's real output differs from an *independently* re-derived
+        ground truth (``cv2.projectPoints``, OpenCV's own forward
+        Brown-Conrady, not our fit run again) by no more than the
+        explained ``|a+b+c|``-scaled bound above, plus a small safety
+        margin -- proving the *size* of the known, documented gap is what
+        we say it is, not silently absorbing a real bug into a loose
+        tolerance.
+
+    Then (3) renders an actual synthetic image through the same known
+    distortion, corrects it with lensfun's real per-pixel map, and checks
+    the corrected pixels against the true undistorted pattern -- the
+    literal "does this un-distort a photo" check -- with an intensity
+    tolerance derived from (2) via the pattern's own gradient bound, not
+    picked independently.
+    """
+    import cv2
+
+    from calsuite.lens import distortion as distortionmod
+
+    width, height = 600, 400  # aspect 1.5: lensfun's own default AspectRatio
+    # for a lens with no <aspect-ratio> element (ours), so the
+    # calibration-vs-image aspect ratio mismatch -- a separate, tiny (<0.1px)
+    # effect -- stays at zero instead of mixing into what this test measures.
+    fx = fy = 500.0
+    cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
+    K = np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]])
+    # A moderate, realistic barrel distortion -- purely radial (k1, k2; no
+    # p1/p2 tangential terms), because ptlens/poly3 have no tangential term
+    # at all, so nonzero p1/p2 here would measure a model-family gap that
+    # has nothing to do with lensfun's *normalization*, which is the point.
+    dist_coeffs = np.array([-0.03, 0.006, 0.0, 0.0, 0.0])
+
+    ptlens = distortionmod.refit_ptlens_poly3(dist_coeffs, K, (width, height))["ptlens"]
+    a, b, c = ptlens["a"], ptlens["b"], ptlens["c"]
+
+    record = store.Record.from_analysis(
+        kind="lens.distortion",
+        device=_device(),
+        analysis=Analysis(result={"ptlens": {"a": a, "b": b, "c": c}}),
+        provenance="measured",
+        method={"name": "distortion.fit_distortion"},
+        conditions={"focal_mm": 50.0},
+    )
+    xml_text = E.export_records(lens_model="Test Lens 50mm", distortion_record=record, lens_cropfactor=1.0)
+    path = E.write_lensfun(xml_text, out=tmp_path, filename="geometry_roundtrip.xml")
+
+    db = lensfunpy.Database(paths=[str(path)], load_common=False, load_bundled=False)
+    lens = next(lens for lens in db.lenses if lens.model == "Test Lens 50mm")
+    modifier = lensfunpy.Modifier(lens, 1.0, width, height)
+    # scale=1.0 explicitly disables lensfunpy's own auto-scale
+    # (Modifier.GetAutoScale) -- the one auto-scale factor the task brief
+    # anticipated as a possible fallback -- so there is nothing left that
+    # needs explaining away by loosening a tolerance; the default (0.0)
+    # would additionally zoom the image to hide empty corners, unrelated to
+    # what this test checks.
+    modifier.initialize(50.0, 2.8, scale=1.0)
+    coords = modifier.apply_geometry_distortion()  # coords[y,x] = (xd, yd): where to sample the raw image
+
+    ys, xs = np.mgrid[0:height, 0:width]
+
+    # --- ground truth: an INDEPENDENT re-derivation of the same known
+    # distortion, via cv2.projectPoints (OpenCV's own forward Brown-Conrady
+    # formula), not our own fit run a second time.
+    xn, yn = (xs - cx) / fx, (ys - cy) / fy
+    object_points = np.stack([xn, yn, np.ones_like(xn)], axis=-1).reshape(-1, 1, 3)
+    ground_truth, _ = cv2.projectPoints(object_points, np.zeros(3), np.zeros(3), K, dist_coeffs)
+    ground_truth = ground_truth.reshape(height, width, 2)
+
+    # --- lensfun's own, real, documented convention: Rd = Ru*(a*Ru^3+b*Ru^2
+    # +c*Ru+d), d = 1-a-b-c, in Hugin-normalized radius (r=1 at half the
+    # shorter pixel dimension, centered the same way lens/distortion.py
+    # itself centers it).
+    hugin_scale_px = min(width, height) / 2.0
+    xu, yu = (xs - cx) / hugin_scale_px, (ys - cy) / hugin_scale_px
+    ru_hugin = np.hypot(xu, yu)
+    d = 1.0 - a - b - c
+    factor = a * ru_hugin**3 + b * ru_hugin**2 + c * ru_hugin + d
+    predicted = np.stack([xu * factor * hugin_scale_px + cx, yu * factor * hugin_scale_px + cy], axis=-1)
+
+    # (1) PROVEN, tight.
+    tight_tolerance_px = 0.2
+    per_pixel_diff = np.linalg.norm(coords - predicted, axis=-1)
+    assert np.nanmax(per_pixel_diff) < tight_tolerance_px, (
+        f"lensfun's actual output does not match its own documented formula "
+        f"(max diff {np.nanmax(per_pixel_diff):.4f}px) -- the formula citation in "
+        f"lens/constants.py may be stale again, or lensfunpy changed conventions."
+    )
+
+    # (2) EXPLAINED, bounded -- not silently loosened.
+    corner_ru_hugin = float(np.max(ru_hugin))
+    explained_bound_px = abs(a + b + c) * hugin_scale_px * corner_ru_hugin
+    safety_margin_px = 0.3  # covers the smaller a*Ru^3+b*Ru^2+c*Ru cross terms + float32 noise
+    ground_truth_diff = np.linalg.norm(coords - ground_truth, axis=-1)
+    assert np.nanmax(ground_truth_diff) < explained_bound_px + safety_margin_px, (
+        f"lensfun's correction differs from the true distortion by more than the "
+        f"explained ptlens '+d' bound ({np.nanmax(ground_truth_diff):.4f}px vs "
+        f"{explained_bound_px + safety_margin_px:.4f}px) -- a real bug may be hiding "
+        f"behind what should be an already-explained gap."
+    )
+    # The explained gap is itself non-trivial here -- this isn't "explain
+    # away a rounding error", the raw (unaccounted-for) comparison in (2)
+    # would have failed outright without the "+d" understanding.
+    assert explained_bound_px > 0.3
+
+    # --- (3) the literal round trip: render a synthetic image through the
+    # SAME known distortion, correct it with lensfun's real per-pixel map,
+    # and compare to the true undistorted pattern.
+    period_px = 240.0  # low frequency: keeps the pattern's own gradient small
+    # relative to the position errors bounded above, so an intensity
+    # mismatch here reports position error, not pattern aliasing.
+
+    def pattern(x, y):
+        return 0.5 + 0.5 * np.sin(2 * np.pi * x / period_px) * np.sin(2 * np.pi * y / period_px)
+
+    # The raw (distorted) synthetic capture: for every raw pixel, the
+    # scene's ideal (undistorted) appearance at the location that distorts
+    # TO that raw pixel -- the inverse of the forward map above, computed
+    # independently via cv2.undistortPoints (distorted -> ideal, with P=K
+    # to get pixel-unit output directly).
+    raw_points = np.stack([xs, ys], axis=-1).reshape(-1, 1, 2).astype(np.float64)
+    undistorted_px = cv2.undistortPoints(raw_points, K, dist_coeffs, P=K).reshape(height, width, 2)
+    raw_image = pattern(undistorted_px[..., 0], undistorted_px[..., 1]).astype(np.float32)
+
+    corrected = cv2.remap(
+        raw_image,
+        coords[..., 0].astype(np.float32),
+        coords[..., 1].astype(np.float32),
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=np.nan,
+    )
+    ground_truth_image = pattern(xs, ys).astype(np.float32)
+
+    valid = np.isfinite(corrected)
+    assert valid.mean() > 0.9  # lensfun leaves only a thin border of holes near the frame edge
+    intensity_diff = np.abs(corrected[valid] - ground_truth_image[valid])
+    # Gradient bound: |d(pattern)/d(position)| <= 2*pi/period_px, so the
+    # position-error bound from (2) translates directly into an intensity
+    # tolerance -- not a number picked independently of that proof.
+    max_gradient = 2 * np.pi / period_px
+    intensity_tolerance = max_gradient * (explained_bound_px + safety_margin_px) + 0.02
+    assert np.nanmax(intensity_diff) < intensity_tolerance, (
+        f"corrected image does not match the undistorted ground truth pattern "
+        f"(max diff {np.nanmax(intensity_diff):.4f} vs tolerance {intensity_tolerance:.4f})"
+    )

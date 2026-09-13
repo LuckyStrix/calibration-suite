@@ -88,6 +88,58 @@ def test_hot_pixel_map_exactly_finds_injected_pixels():
     assert len(expected) > 0
 
 
+def test_hot_pixel_map_exact_despite_per_channel_black_spread():
+    """Settles the suspicion docs/design.md's bug hunt raised: does pooling
+    all 4 CFA channels into one median/MAD (find_hot_pixels used to do this
+    with no black subtraction at all) bias the hot-pixel threshold when the
+    channels' black levels genuinely differ?
+
+    With a 20 DN per-channel black spread (R=502, G1=508.7, G2=515.3,
+    B=522 -- a plausible order of magnitude for real G1/G2 amplifier-chain
+    and R/G/B differences) and a moderate injected hot-pixel excess (50 e-/s
+    extra over 2s at gain 2 = 50 DN), the *unfixed* pooled implementation
+    treats the 20 DN of cross-channel baseline spread as noise, inflates
+    its MAD-based threshold from ~544 DN to ~574 DN, and misses 147 of the
+    151 injected hot pixels -- almost the whole map. find_hot_pixels now
+    subtracts each CFA phase's own median before pooling, which is exactly
+    faithful to the physics (a hot photosite's excess dark current doesn't
+    care which color filter sits over it, but the *baseline* under it
+    does), and recovers the injected map exactly. Reverting that fix makes
+    this test fail (verified manually: found == expected goes to False,
+    with 147/151 pixels missing) -- this is the test that pins it.
+    """
+    spread = 20.0
+    black_dn_by_channel = {
+        "R": 512.0 - spread / 2,
+        "G1": 512.0 - spread / 6,
+        "G2": 512.0 + spread / 6,
+        "B": 512.0 + spread / 2,
+    }
+    model = synth_sensor.SensorModel(
+        shape=(128, 128),
+        gain_e_per_dn=2.0,
+        black_dn_by_channel=black_dn_by_channel,
+        read_noise_e=2.0,
+        dark_current_e_per_s_at_20c=0.05,
+        dsnu_std_e_per_s=0.0,
+        prnu_std=0.0,
+        hot_pixel_fraction=0.01,
+        hot_pixel_extra_e_per_s=50.0,
+        fixed_pattern_seed=3,
+    )
+    rng = np.random.default_rng(0)
+    frames = [synth_sensor.frame(model, exposure_s=2.0, flux_e_per_s=0.0, temp_c=20.0, rng=rng) for _ in range(4)]
+
+    result = darks.find_hot_pixels(frames)
+    _, _, hot_mask = synth_sensor._fixed_pattern_maps(model)
+    expected_rows, expected_cols = np.nonzero(hot_mask)
+
+    found = set(zip(result["rows"].tolist(), result["cols"].tolist(), strict=True))
+    expected = set(zip(expected_rows.tolist(), expected_cols.tolist(), strict=True))
+    assert found == expected
+    assert len(expected) > 100  # a spread this small next to noise would make a weak test otherwise
+
+
 def test_star_eater_check_says_no_when_hot_pixels_grow_with_exposure():
     model = synth_sensor.SensorModel(
         shape=(64, 64),

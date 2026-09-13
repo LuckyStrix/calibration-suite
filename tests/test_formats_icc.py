@@ -122,3 +122,79 @@ def test_pillow_opens_profile_and_transform_matches_matrix(tmp_path):
     out = ImageCms.applyTransform(swatch, transform)
     got = np.array(out)[0, 0].astype(np.int64)
     assert got == pytest.approx(np.array([200, 100, 50]), abs=6)
+
+
+def test_pillow_lab_transform_matches_our_own_matrix_and_gamma_maths(tmp_path):
+    """A second, more targeted independent-implementation cross-check
+    (task item 4): the round trip above uses sRGB's own primaries, so a
+    bug that swaps rows/columns of the matrix or double-applies a
+    chromatic adaptation could still land close to identity by symmetry
+    and go unnoticed. This uses a deliberately asymmetric matrix instead
+    (not derived from any real primary set): compute our own predicted
+    Lab for a set of RGB values from the *exact* matrix/gamma numbers
+    written into the file (plain numpy + ``colour.XYZ_to_Lab``), then ask
+    littleCMS (via Pillow) to map that Lab back through the *same* file to
+    RGB, and check we get back the RGB we started with -- if
+    ``write_profile``'s rXYZ/gXYZ/bXYZ/TRC tag bytes don't encode exactly
+    what was asked, this round trip won't close.
+
+    Deliberately goes LAB->RGB, not RGB->LAB: ``display/validate.py``'s own
+    ``lab_to_rgb_via_profile`` already establishes (and documents, having
+    verified it empirically) Pillow's "LAB" mode *input* packing convention
+    (L byte = L*/100*255, a/b byte = value+128) for building a LAB image to
+    feed into a transform. The *output* byte packing of an RGB->LAB
+    transform turned out, while writing this test, to not follow that same
+    "+128" convention consistently (some paths behave like a signed byte
+    instead) -- rather than ship a test built on a guessed convention for
+    a code path this suite doesn't otherwise use, this reuses the one
+    input convention that's actually verified.
+    """
+    ImageCms = pytest.importorskip("PIL.ImageCms")
+    from PIL import Image
+
+    import colour
+
+    # Not derived from any real primary set -- deliberately asymmetric so a
+    # row/column-order bug shows up as a large error, not a rounding one.
+    matrix_d50 = np.array(
+        [
+            [0.55, 0.18, 0.20],
+            [0.25, 0.70, 0.06],
+            [0.02, 0.10, 0.92],
+        ]
+    )
+    gamma = 2.4
+    path = tmp_path / "asymmetric.icc"
+    icc.write_profile(path, device_class="scnr", description="asymmetric-test", matrix=matrix_d50, trc=gamma)
+
+    # Excludes near-black: gamma=2.4 makes low RGB values steep enough that
+    # 8-bit Lab quantization on the way in amplifies into several counts of
+    # RGB error on the way out -- a real (explainable) rounding effect, not
+    # what this test is checking for, so kept out of the asserted set.
+    rgb_values = np.array([(0.8, 0.3, 0.1), (0.2, 0.9, 0.4), (0.5, 0.5, 0.9), (0.7, 0.7, 0.7)])
+    xyz_d50 = rgb_values**gamma @ matrix_d50.T  # the exact matrix/TRC model formats/icc.py's docstring describes
+    d50_xy = colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D50"]
+    our_lab = np.array([colour.XYZ_to_Lab(xyz, illuminant=d50_xy) for xyz in xyz_d50])
+
+    lab_profile = ImageCms.createProfile("LAB", colorTemp=5000)  # D50-referenced, matching the ICC PCS
+    dst_profile = ImageCms.ImageCmsProfile(str(path))
+    transform = ImageCms.buildTransformFromOpenProfiles(
+        lab_profile, dst_profile, "LAB", "RGB", renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC
+    )
+    recovered_rgb = []
+    for l_star, a_star, b_star in our_lab:
+        px = (
+            max(0, min(255, round(l_star / 100.0 * 255))),
+            max(0, min(255, round(a_star + 128))),
+            max(0, min(255, round(b_star + 128))),
+        )
+        swatch = Image.new("LAB", (1, 1), px)
+        recovered_rgb.append(ImageCms.applyTransform(swatch, transform).getpixel((0, 0)))
+    recovered_rgb = np.array(recovered_rgb, dtype=np.float64)
+
+    expected_rgb = np.round(rgb_values * 255.0)
+    # Tolerance covers 8-bit quantization at each of the two hops (RGB->Lab
+    # by our own maths, Lab->RGB by littleCMS reading the file) -- a real
+    # encoding bug (wrong axis, missing/duplicated adaptation, wrong scale)
+    # showed up as tens-to-hundreds of RGB levels during development.
+    assert recovered_rgb == pytest.approx(expected_rgb, abs=2.0)

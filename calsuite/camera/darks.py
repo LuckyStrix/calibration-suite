@@ -59,21 +59,42 @@ def find_hot_pixels(frames: list, sigma_k: float = HOT_PIXEL_SIGMA_K) -> dict:
     noise) and flag pixels above a robust (MAD-based) sigma threshold on the
     *raw* visible pixel grid.
 
+    The four interleaved CFA phases can each sit on their own black-level
+    baseline (real on some sensors -- raw.black_level_by_channel's
+    docstring), so each phase's own median is subtracted out before the
+    single pooled median/MAD is computed: pooling the raw DN directly would
+    fold that baseline spread into the MAD-based noise estimate and bias
+    the threshold high (a suspicion confirmed by
+    tests/test_camera_darks.py::test_hot_pixel_map_exact_despite_per_channel_black_spread's
+    synthetic case with a per-channel black spread -- without this
+    correction that test's injected hot pixels are 97% missed). A hot
+    photosite's excess dark current is filter-independent, so one shared
+    threshold on the baseline-corrected residual is the faithful way to
+    detect it, regardless of which CFA phase it happens to sit under.
+
     Returns ``{"rows": int array, "cols": int array, "count": int,
     "threshold_dn": float, "median_dn": float}`` -- coordinates are into
     each frame's own ``visible`` sub-array (row/col 0 is the visible area's
     own origin, not the full ``cfa`` array's), so they line up directly with
-    ``raw.planes(frame, area="visible")``'s arrays too.
+    ``raw.planes(frame, area="visible")``'s arrays too. ``threshold_dn``/
+    ``median_dn`` are in this baseline-corrected space (each phase's own
+    median subtracted), not the sensor's absolute DN scale.
     """
     stack = np.mean(
         [f.cfa[f.visible[0], f.visible[1]].astype(np.float64) for f in frames],
         axis=0,
     )
-    median = float(np.median(stack))
-    mad = float(np.median(np.abs(stack - median)))
+    corrected = np.empty_like(stack)
+    for dr in (0, 1):
+        for dc in (0, 1):
+            phase = stack[dr::2, dc::2]
+            corrected[dr::2, dc::2] = phase - np.median(phase)
+
+    median = float(np.median(corrected))
+    mad = float(np.median(np.abs(corrected - median)))
     robust_sigma = 1.4826 * mad
     threshold = median + sigma_k * robust_sigma
-    hot = stack > threshold
+    hot = corrected > threshold
     rows, cols = np.nonzero(hot)
     return {
         "rows": rows.astype(np.int32),
