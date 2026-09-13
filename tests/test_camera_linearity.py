@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -93,6 +95,41 @@ def test_no_linear_range_refusal_does_not_fire_on_good_data():
     frames = _flats(np.linspace(0.2, 8.0, 12), 4000.0, full_well_e=20000.0)
     a = linearity.analyze_linearity(frames, 512.0)
     assert a.ok
+
+
+def _shift_dn(frame, offset):
+    cfa = frame.cfa.astype(np.float64) + offset
+    return replace(
+        frame,
+        cfa=np.clip(cfa, 0, 65535).astype(np.uint16),
+        black_level=tuple(b + offset for b in frame.black_level),
+        white_level=frame.white_level + offset,
+    )
+
+
+def test_black_offset_invariance():
+    """The baseline flux-rate slope is fit forced-through-the-origin
+    (`sum(x*y)/sum(x*x)`), unlike an ordinary free-intercept regression --
+    which means it is NOT automatically shift-invariant in y: a wrong
+    constant black subtraction biases that forced-origin slope directly
+    (a free-intercept OLS slope wouldn't even notice). Adding a constant
+    DN offset to every frame, with black_dn shifted to match, must still
+    recover the same flux rate and full well.
+    """
+    gain, black_dn, full_well_e, flux = 2.0, 512.0, 20000.0, 4000.0
+    exposures = np.linspace(0.2, 8.0, 12)
+    frames = _flats(exposures, flux, black_dn=black_dn, gain=gain, full_well_e=full_well_e)
+    a1 = linearity.analyze_linearity(frames, black_dn, gain_e_per_dn=gain)
+
+    offset = 300.0
+    frames_shifted = [_shift_dn(f, offset) for f in frames]
+    a2 = linearity.analyze_linearity(frames_shifted, black_dn + offset, gain_e_per_dn=gain)
+
+    assert a1.ok and a2.ok
+    for ch in linearity.CHANNELS:
+        d1, d2 = a1.result["channels"][ch], a2.result["channels"][ch]
+        assert d1["flux_rate_dn_per_s"] == pytest.approx(d2["flux_rate_dn_per_s"], rel=1e-6)
+        assert d1["full_well_e"] == pytest.approx(d2["full_well_e"], rel=1e-6)
 
 
 def test_clip_detection_compares_black_subtracted_signal_to_black_subtracted_range():

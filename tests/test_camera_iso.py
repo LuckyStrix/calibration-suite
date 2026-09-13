@@ -38,6 +38,26 @@ def test_refuses_with_too_few_isos():
     assert a.refusals[0].check == "too_few_isos"
 
 
+def test_scale_invariance_of_recommended_iso_and_dynamic_range():
+    """recommended_iso and dynamic_range_stops are ratio/dimensionless
+    quantities: uniformly scaling every read-noise and full-well number by
+    the same constant (e.g. a different linear unit) must not move the
+    recommended ISO, or the stops figure, at all."""
+    read_noise_e_by_iso = {100: 6.0, 200: 4.2, 400: 3.1, 800: 2.5, 1600: 2.45, 3200: 2.42}
+    full_well_e = 40000.0
+    a1 = iso.analyze_iso_invariance(read_noise_e_by_iso, full_well_e)
+
+    k = 3.7
+    a2 = iso.analyze_iso_invariance({i: v * k for i, v in read_noise_e_by_iso.items()}, full_well_e * k)
+
+    assert a1.ok and a2.ok
+    assert a1.result["recommended_iso"] == a2.result["recommended_iso"]
+    for iso_val in read_noise_e_by_iso:
+        assert a1.result["dynamic_range_stops_by_iso"][iso_val] == pytest.approx(
+            a2.result["dynamic_range_stops_by_iso"][iso_val], abs=1e-9
+        )
+
+
 def test_per_iso_full_well_dict_supported():
     read_noise_e_by_iso = {100: 3.0, 400: 2.5, 1600: 2.4}
     full_well_e_by_iso = {100: 40000.0, 400: 39000.0, 1600: 38000.0}

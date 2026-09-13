@@ -34,6 +34,47 @@ def test_trc_fit_refuses_too_few_points():
     assert result.refusals[0].check == "trc_r_too_few_points"
 
 
+def test_trc_fit_refuses_pure_noise():
+    """A ramp whose measured Y is uncorrelated with the drive level used to
+    come back `ok=True` with a specific-looking but meaningless
+    "effective_gamma" -- there was no goodness-of-fit check at all. A real
+    display's tone response is a smooth near-power-law; noise like this
+    shouldn't fit at all."""
+    rng = np.random.default_rng(0)
+    levels = np.linspace(0.0, 1.0, 17)
+    noisy_y = rng.uniform(0.01, 0.02, size=17)
+    ramps = {"r": {"levels": levels.tolist(), "xyz": [[0.1, float(y), 0.1] for y in noisy_y]}}
+    result = analysis.trc_fit(ramps, black_y=0.0)
+    assert not result.ok
+    assert result.refusals[0].check == "trc_r_poor_fit"
+    assert "r" not in result.result["effective_gamma"]
+
+
+def test_trc_fit_r2_boundary_just_inside_and_outside():
+    """Construct a ramp with a known r^2 by mixing a perfect power-law
+    signal with noise, and check the refusal straddles `TRC_MIN_R2`."""
+    levels = np.linspace(0.01, 0.99, 15)
+    true_y = levels**2.2
+    rng = np.random.default_rng(3)
+
+    def _fit(noise_scale):
+        y = true_y + rng.normal(0.0, noise_scale, size=true_y.shape)
+        y = np.clip(y, 1e-6, None)
+        full_levels = np.concatenate([[0.0], levels, [1.0]])
+        full_y = np.concatenate([[0.0], y, [1.0]])
+        ramps = {"g": {"levels": full_levels.tolist(), "xyz": [[0, float(v), 0] for v in full_y]}}
+        return analysis.trc_fit(ramps, black_y=0.0)
+
+    good = _fit(1e-4)
+    assert good.ok
+    assert good.residuals["gamma_fit_r2"]["g"] > dc.TRC_MIN_R2
+
+    bad = _fit(0.5)
+    assert not bad.ok
+    assert bad.refusals[0].check == "trc_g_poor_fit"
+    assert bad.refusals[0].value < dc.TRC_MIN_R2
+
+
 def test_additivity_passes_for_additive_display():
     model = DisplayModel(white_boost_frac=0.0)
     black, r, g, b, w = (model.measure(c) for c in ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1)))
@@ -77,6 +118,27 @@ def test_black_and_contrast():
 def test_black_and_contrast_refuses_nonpositive_black():
     result = analysis.black_and_contrast([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
     assert not result.ok
+
+
+def test_uniformity_refuses_a_single_point_grid():
+    """A 1x1 "grid" compares the center cell against itself -- a
+    mathematically guaranteed perfect-uniformity result no matter how
+    non-uniform the real panel is. This used to come back `ok=True` with
+    100%/0-ΔE00 "uniformity" for any single measurement handed in."""
+    grid = [[[100.0, 50.0, 20.0]]]
+    result = analysis.uniformity(grid)
+    assert not result.ok
+    assert result.refusals[0].check == "uniformity_too_few_points"
+
+
+def test_uniformity_does_not_refuse_at_the_minimum_grid_size():
+    n = dc.UNIFORMITY_MIN_N
+    model = DisplayModel(nonuniformity_amplitude=0.1)
+    grid_patches = patchesmod.uniformity_grid(n=n)
+    grid_xyz = [[list(model.measure(p.rgb, position=p.position)) for p in row] for row in grid_patches]
+    result = analysis.uniformity(grid_xyz)
+    assert result.ok
+    assert all(r.check != "uniformity_too_few_points" for r in result.refusals)
 
 
 def test_uniformity_recovers_falloff():

@@ -251,7 +251,7 @@ def _cmd_mtf(args) -> int:
     camera_ref, lens_ref = _device_refs(frames)
     plane = rawmod.planes(frames[0])["G1"]
     grid = tuple(int(v) for v in args.grid.split("x"))
-    analysis = mtfmod.mtf_field_grid(plane, grid=grid)
+    analysis = mtfmod.mtf_field_grid(plane, grid=grid, saturation_dn=frames[0].white_level)
 
     conditions = {"focal_mm": frames[0].meta.focal, "aperture": frames[0].meta.aperture}
     record = store.Record.from_analysis(
@@ -284,7 +284,7 @@ def _cmd_psf(args) -> int:
         return 1
     camera_ref, lens_ref = _device_refs(frames)
     plane = rawmod.planes(frames[0])["G1"]
-    analysis = psfmod.psf_field(plane)
+    analysis = psfmod.psf_field(plane, saturation_dn=frames[0].white_level)
 
     conditions = {"focal_mm": frames[0].meta.focal, "aperture": frames[0].meta.aperture}
     record = store.Record.from_analysis(

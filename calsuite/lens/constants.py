@@ -364,6 +364,21 @@ MTF_MIN_ROWS = 20
 MTF_FIELD_GRID = (3, 5)
 # (rows, cols) -- "5x3 field grid" per docs/design.md §4.4.
 
+MTF_SATURATION_FRACTION = 0.995
+# Second bug hunt: a slanted edge whose bright plateau is clipped against
+# the sensor's white level doesn't just lose a bit of contrast -- clipping
+# the *transition itself* (not just the flat plateaus on either side)
+# chops the top of the erf-shaped edge profile, which flattens the LSF and
+# reports a MTF50 *higher* than the lens actually delivers (verified
+# numerically: a clipped synthetic edge at sigma=1.2px reported MTF50 2.6x
+# the unclipped value for the same lens). Michelson contrast alone doesn't
+# catch this -- a clipped ROI can still show a perfectly plausible-looking
+# (bright - dark) spread. An ROI whose max reaches this fraction of the
+# frame's known saturation level (`raw.RawFrame.white_level`, passed in by
+# `lens/commands.py`) is refused instead of silently biased. 0.995 rather
+# than 1.0 to still catch a plateau clipped at every pixel but one (rounding
+# noise near the ceiling).
+
 # ---------------------------------------------------------------------------
 # psf.py
 # ---------------------------------------------------------------------------
@@ -381,6 +396,21 @@ PSF_WINDOW_RADIUS_PX = 15
 # moments around its centroid -- wide enough to include a lens's coma wing
 # a few px out from the core, narrow enough that two stars closer than
 # ~30px don't contaminate each other's moment sums in a typical field test.
+
+PSF_SATURATION_FRACTION = 0.995
+# Second bug hunt: a saturated star's core is clipped flat, which biases
+# the second-moment FWHM/ellipticity *upward* -- the clipped core spreads
+# the intensity-weighted second moment out over the whole flat-topped
+# plateau instead of the true (narrower) Gaussian core (verified
+# numerically: a fully clipped synthetic star reported sigma_major/minor
+# both ~53% larger than the true PSF for the same optics). `psf_field`
+# takes the frame's saturation level (`raw.RawFrame.white_level`) and
+# excludes any blob whose window reaches this fraction of it from the
+# reported stars, refusing outright only if every detected blob was
+# saturated -- the same "keep what a real photo still supports, refuse
+# only if nothing usable is left" shape as `mtf.mtf_field_grid`'s per-cell
+# refusals. Same 0.995 fraction as `MTF_SATURATION_FRACTION`, for the same
+# reason (tolerate one unclipped pixel of rounding noise at the ceiling).
 
 # ---------------------------------------------------------------------------
 # export_lensfun.py

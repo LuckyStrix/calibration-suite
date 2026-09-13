@@ -19,6 +19,32 @@ RAMP_STEPS_DEFAULT = 17
 UNIFORMITY_GRID_N = 5
 # Design §5.2 specifies a 5x5 grid explicitly.
 
+UNIFORMITY_MIN_N = 3
+# Second bug hunt: `display.analysis.uniformity` had no floor at all on the
+# grid size it was handed -- a 1x1 "grid" compares the single center cell
+# against *itself*, so it reports a mathematically perfect 100%/0-ΔE00
+# uniformity result (`status="ok"`) regardless of how non-uniform the real
+# panel is, which is exactly the confident-fit-on-a-degenerate-dataset
+# failure mode house rule 3 exists to catch. 3 is the bare floor below
+# which there's no way to tell a genuine center reading from an edge one --
+# `patches.uniformity_grid()` always builds the design's full 5x5, so this
+# only bites a caller (or future one) that hands the pure function a
+# hand-built, undersized grid directly.
+
+TRC_MIN_R2 = 0.9
+# Second bug hunt: `display.analysis.trc_fit` fit a gamma (and reported it
+# with no refusal) from *any* >= 3-point ramp, including one whose levels
+# and measured luminance are uncorrelated noise -- a synthetic all-noise
+# ramp fit to r^2 = 0.05 and still came back `status="ok"` with a specific-
+# looking (and meaningless) "effective_gamma". A real display's tone
+# response is a smooth, monotonic near-power-law over its ramp -- even a
+# noisy real measurement fits log(Y) vs. log(level) with r^2 well above
+# 0.99 in practice (see `test_trc_fit_recovers_known_gammas`) -- so 0.9 is
+# a generous floor that only refuses when the ramp doesn't behave like a
+# tone-response curve at all (noise, a mis-paired level/measurement
+# sequence, a stuck patch), not a stricter goodness-of-fit gate on real
+# panels.
+
 UNIFORMITY_PATCH_SIZE_FRAC = 0.15
 # Small enough that a uniformity grid position genuinely samples the panel
 # area under it (not most of the screen), big enough that a colorimeter

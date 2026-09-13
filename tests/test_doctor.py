@@ -119,6 +119,17 @@ def test_check_profiles_without_recent_validation_fires_when_later_attempt_was_r
     assert DISPLAY["id"] in findings[0].message
 
 
+def test_check_profiles_without_recent_validation_silent_when_validated_in_the_same_second(tmp_path):
+    # ``created`` is second-resolution (store.utcnow_stamp) -- a validation
+    # that lands in the exact same second as the profile it validates (a
+    # fast automated pipeline, or just two quick commands) is not provably
+    # "before" it, so strict "newer than" must not treat this as unvalidated.
+    st = storemod.Store(tmp_path)
+    st.save(_record("display.profile", DISPLAY, created="20250101T000000Z"))
+    st.save(_record("display.validation", DISPLAY, created="20250101T000000Z"))
+    assert doctor.check_profiles_without_recent_validation(st) == []
+
+
 def test_check_unsuperseded_refusals_fires(tmp_path):
     st = storemod.Store(tmp_path)
     st.save(_record("camera.ptc", CAMERA, created=storemod.utcnow_stamp(), status="refused"))

@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from calsuite.camera import color as colormod
 from calsuite.camera import color_constants as cc
 from calsuite.camera import ssf
 
@@ -83,6 +84,35 @@ def test_fit_from_ssf_produces_3x3_and_low_error_for_luther_ssf():
     assert M.shape == (3, 3)
     assert analysis.residuals["delta_e00_mean"] < 3.0
     assert analysis.result["white_patch_raw_rgb"] is not None
+
+
+def test_illuminant_scale_invariance_of_delta_e00():
+    """Scaling the illuminant's absolute intensity by a constant (a
+    dimmer/brighter light, same spectral shape) must not change how well
+    a Tier-B fit reproduces the reference colors: colour.sd_to_XYZ's own
+    k-normalization already makes the *target* XYZ illuminant-scale
+    invariant, and camera_response's raw response is exactly linear in
+    illuminant intensity, so a single fitted matrix absorbs any scale
+    factor with no change in mean DeltaE00."""
+    import colour
+
+    illuminant_sd = colour.SDS_ILLUMINANTS["D65"]
+    cmfs = colour.MSDS_CMFS["CIE 1931 2 Degree Standard Observer"]
+    reflectances = colour.SDS_COLOURCHECKERS["ISO 17321-1"]
+    names = list(reflectances.keys())
+    ssf_obj = _luther_ssf()
+    illuminant_xy = (0.3127, 0.3290)
+
+    def mean_de(scale):
+        illum = illuminant_sd * scale
+        rgb = np.array([ssf.camera_response(ssf_obj, illum, reflectances[n]) for n in names])
+        xyz = np.array([ssf._xyz_for_reflectance(reflectances[n], illum, cmfs) for n in names])
+        M = colormod.fit_matrix_terms(rgb, xyz, model="matrix", illuminant_xy=illuminant_xy, white_local_idx=None)
+        pred = colormod.predict_xyz(rgb, "matrix", M)
+        de = colormod.delta_e00(pred, xyz, illuminant_xy)
+        return float(np.mean(de))
+
+    assert mean_de(0.2) == pytest.approx(mean_de(50.0), abs=0.05)
 
 
 def test_camera_response_matches_colour_sciences_own_spectral_integration():

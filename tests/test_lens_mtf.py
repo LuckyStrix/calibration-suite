@@ -5,7 +5,12 @@ import pytest
 
 from calsuite import raw as rawmod
 from calsuite.lens import mtf as M
-from calsuite.lens.constants import MTF_EDGE_MAX_ANGLE_DEG, MTF_EDGE_MIN_ANGLE_DEG, MTF_MIN_ROWS
+from calsuite.lens.constants import (
+    MTF_EDGE_MAX_ANGLE_DEG,
+    MTF_EDGE_MIN_ANGLE_DEG,
+    MTF_MIN_ROWS,
+    MTF_SATURATION_FRACTION,
+)
 from calsuite.synth import lens as synthlens
 from calsuite.synth import sensor as synth_sensor
 
@@ -77,6 +82,49 @@ def test_refuses_too_few_rows():
     analysis = M.edge_sfr(plane)
     assert not analysis.ok
     assert analysis.refusals[0].check == "too_few_rows"
+
+
+def test_refuses_saturated_edge_just_over_the_ceiling():
+    roi = np.full((MTF_MIN_ROWS + 5, 20), 100.0)
+    saturation_dn = 1000.0
+    roi[10, 5] = saturation_dn * MTF_SATURATION_FRACTION  # exactly at the refusal boundary
+    analysis = M.edge_sfr(roi, saturation_dn=saturation_dn)
+    assert not analysis.ok
+    assert analysis.refusals[0].check == "saturated"
+
+
+def test_does_not_refuse_saturated_just_under_the_ceiling():
+    roi = np.full((MTF_MIN_ROWS + 5, 20), 100.0)
+    saturation_dn = 1000.0
+    roi[10, 5] = saturation_dn * MTF_SATURATION_FRACTION - 1.0  # just inside
+    analysis = M.edge_sfr(roi, saturation_dn=saturation_dn)
+    assert all(r.check != "saturated" for r in analysis.refusals)
+
+
+def test_clipped_bright_plateau_is_refused_instead_of_reporting_a_biased_mtf50():
+    """A slanted edge whose bright plateau (and part of the transition
+    itself) is clipped against the sensor's saturation level used to come
+    back `ok=True` with a badly *inflated* MTF50 -- clipping the top of the
+    erf-shaped transition flattens the LSF, which looks like a sharper
+    edge, not a lower-contrast one, so `low_contrast` never caught it.
+    ``saturation_dn`` (the frame's real ceiling) must refuse it instead."""
+    model = synth_sensor.SensorModel(
+        shape=(300, 220), read_noise_e=0.1, gain_e_per_dn=2.0, black_dn=100.0,
+        prnu_std=0.0, dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0, full_well_e=1500.0,
+    )
+    rng = np.random.default_rng(7)
+    frame = synthlens.render_slanted_edge(
+        model, 5.0, 1.2, rng=rng, exposure_s=0.3, low_flux_e_per_s=2.0e3, high_flux_e_per_s=4.0e4
+    )
+    plane = rawmod.planes(frame)["G1"]
+    assert plane.max() >= model.white_level  # sanity: this ROI really is clipped
+
+    unaware = M.edge_sfr(plane)
+    assert unaware.ok  # documents the pre-fix blind spot: no saturation_dn, no refusal
+
+    aware = M.edge_sfr(plane, saturation_dn=model.white_level)
+    assert not aware.ok
+    assert aware.refusals[0].check == "saturated"
 
 
 def test_field_grid_reports_map_and_per_cell_refusals():

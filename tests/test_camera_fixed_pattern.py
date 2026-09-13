@@ -69,6 +69,51 @@ def test_row_banding_detected_when_present():
         )
 
 
+def _add_periodic_col_band(frame, period_cols: int, amplitude_dn: float):
+    """The column-axis mirror of ``_add_periodic_row_band`` above -- an
+    artifact that repeats across columns (constant down each column)."""
+    cols = np.arange(frame.cfa.shape[1])
+    band = amplitude_dn * np.sin(2 * np.pi * cols / period_cols)
+    cfa = frame.cfa.astype(np.float64) + band[None, :]
+    return replace(frame, cfa=np.clip(cfa, 0, 65535).astype(np.uint16))
+
+
+def test_column_banding_detected_as_column_not_row():
+    """The sharpest test for row/column confusion in banding_spectrum:
+    inject a periodic offset that varies column-to-column (constant down
+    a column) and check it's flagged as column banding, and specifically
+    NOT as row banding -- the mirror image of
+    test_row_banding_detected_when_present above."""
+    model = synth_sensor.SensorModel(
+        shape=(64, 128), black_dn=512.0, gain_e_per_dn=2.0, read_noise_e=1.0, prnu_std=0.0,
+        dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0,
+    )
+    plain_biases = _frames(model, 1e-4, 0.0, 20.0, 6, seed=4)
+    banded_biases = [_add_periodic_col_band(f, period_cols=16, amplitude_dn=15.0) for f in plain_biases]
+
+    a_band = fixed_pattern.analyze_fixed_pattern(
+        darks=_frames(model, 5.0, 0.0, 20.0, 4, seed=1),
+        flats=_frames(model, 0.5, 10000.0, 20.0, 4, seed=2),
+        biases=banded_biases,
+        black_dn=512.0,
+    )
+    a_plain = fixed_pattern.analyze_fixed_pattern(
+        darks=_frames(model, 5.0, 0.0, 20.0, 4, seed=1),
+        flats=_frames(model, 0.5, 10000.0, 20.0, 4, seed=2),
+        biases=plain_biases,
+        black_dn=512.0,
+    )
+    for ch in fixed_pattern.CHANNELS:
+        assert (
+            a_band.result["channels"][ch]["col_banding_peak_ratio"]
+            > a_plain.result["channels"][ch]["col_banding_peak_ratio"]
+        )
+        assert (
+            a_band.result["channels"][ch]["row_banding_peak_ratio"]
+            < a_band.result["channels"][ch]["col_banding_peak_ratio"]
+        )
+
+
 def test_prnu_std_recovered_with_per_channel_black_dn():
     """prnu_map's normalization (signal = stacked - black, then divided by
     signal's own mean) is genuinely sensitive to getting each channel's

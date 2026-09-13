@@ -176,8 +176,19 @@ def check_profiles_without_recent_validation(st: storemod.Store) -> list:
         if not ok_records:
             continue
         latest_profile = max(ok_records, key=lambda r: r.created)
+        # ``created`` has 1-second resolution (store.utcnow_stamp) -- a
+        # validation run immediately after its profile build (an automated
+        # pipeline, or simply two fast steps) can land in the very same
+        # second. Strict ``>`` would then call that validation *not* newer
+        # than the profile it just validated and raise a false "no recent
+        # validation" finding; ``>=`` treats a same-second validation as
+        # backing the profile, which is the honest reading of a timestamp
+        # this coarse -- it can't prove the validation came first, but it
+        # can't prove it didn't either, and a false "unvalidated" finding
+        # is worse than the reverse here (docs/design.md house rule 3's
+        # logic: don't assert a finding the evidence can't support).
         newer_passing_validation = any(
-            r.created > latest_profile.created and r.status == "ok"
+            r.created >= latest_profile.created and r.status == "ok"
             for r in st.all(kind="display.validation", device_id=device_id)
         )
         if not newer_passing_validation:

@@ -13,7 +13,7 @@ import numpy as np
 from scipy import ndimage
 
 from calsuite.fit import Analysis
-from calsuite.lens.constants import PSF_MIN_SNR, PSF_WINDOW_RADIUS_PX
+from calsuite.lens.constants import PSF_MIN_SNR, PSF_SATURATION_FRACTION, PSF_WINDOW_RADIUS_PX
 
 FWHM_PER_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))  # ~2.3548, the standard Gaussian FWHM/sigma ratio
 
@@ -36,11 +36,33 @@ def find_blobs(plane: np.ndarray, *, min_snr: float = PSF_MIN_SNR) -> list:
     return [(float(c[1]), float(c[0])) for c in centroids]  # (x, y)
 
 
+def is_saturated(plane: np.ndarray, x0: float, y0: float, *, window: int = PSF_WINDOW_RADIUS_PX,
+                  saturation_dn: float | None = None) -> bool:
+    """True if the blob nearest ``(x0, y0)``'s window reaches
+    ``saturation_dn * PSF_SATURATION_FRACTION`` -- see lens/constants.py's
+    ``PSF_SATURATION_FRACTION`` docstring for why a clipped core biases the
+    second-moment FWHM upward rather than just losing peak signal. A
+    ``None`` (unknown) ``saturation_dn`` never flags anything -- callers
+    that don't know the sensor's white level (e.g. a plain synthetic
+    array in a test) get the old, unchecked behavior."""
+    if saturation_dn is None:
+        return False
+    h, w = plane.shape
+    xi0, xi1 = max(int(x0 - window), 0), min(int(x0 + window + 1), w)
+    yi0, yi1 = max(int(y0 - window), 0), min(int(y0 + window + 1), h)
+    sub = plane[yi0:yi1, xi0:xi1]
+    if sub.size == 0:
+        return False
+    return float(sub.max()) >= saturation_dn * PSF_SATURATION_FRACTION
+
+
 def moments(plane: np.ndarray, x0: float, y0: float, *, window: int = PSF_WINDOW_RADIUS_PX) -> dict | None:
     """Intensity-weighted second/third moments of the blob nearest
     ``(x0, y0)``, in a ``2*window+1`` square window. Returns ``None`` if
     the window's background-subtracted flux is non-positive (nothing to
-    measure)."""
+    measure). Saturation is checked separately (``is_saturated``, called by
+    ``psf_field`` before this) since a clipped blob still has positive flux
+    -- it's biased, not absent."""
     h, w = plane.shape
     xi0, xi1 = max(int(x0 - window), 0), min(int(x0 + window + 1), w)
     yi0, yi1 = max(int(y0 - window), 0), min(int(y0 + window + 1), h)
@@ -104,10 +126,23 @@ def classify_orientation(orientation_deg: float, x: float, y: float, center: tup
     }
 
 
-def psf_field(plane: np.ndarray, *, center: tuple | None = None, min_snr: float = PSF_MIN_SNR) -> Analysis:
+def psf_field(
+    plane: np.ndarray,
+    *,
+    center: tuple | None = None,
+    min_snr: float = PSF_MIN_SNR,
+    saturation_dn: float | None = None,
+) -> Analysis:
     """Detect every star/pinhole blob in ``plane`` and report its moments
     plus its sagittal/meridional classification relative to ``center``
-    (defaults to the plane's own geometric center)."""
+    (defaults to the plane's own geometric center). ``saturation_dn``, when
+    given (the frame's own ``raw.RawFrame.white_level``), excludes any blob
+    whose core is clipped -- its FWHM/ellipticity would be biased, not
+    absent, so it's dropped from ``stars`` rather than measured wrong; see
+    lens/constants.py's ``PSF_SATURATION_FRACTION``. The record only
+    refuses outright if *every* detected blob turned out saturated (the
+    same "keep what's usable, refuse only if nothing is left" shape as
+    ``mtf.mtf_field_grid``'s per-cell refusals)."""
     a = Analysis()
     h, w = plane.shape
     center = center or ((w - 1) / 2.0, (h - 1) / 2.0)
@@ -118,7 +153,11 @@ def psf_field(plane: np.ndarray, *, center: tuple | None = None, min_snr: float 
         return a
 
     stars = []
+    n_saturated = 0
     for x0, y0 in seeds:
+        if is_saturated(plane, x0, y0, saturation_dn=saturation_dn):
+            n_saturated += 1
+            continue
         m = moments(plane, x0, y0)
         if m is None:
             continue
@@ -126,8 +165,17 @@ def psf_field(plane: np.ndarray, *, center: tuple | None = None, min_snr: float 
         stars.append(m)
 
     if not stars:
-        a.refuse("no_usable_blobs", "every detected blob had non-positive background-subtracted flux", 0, 1)
+        if n_saturated and n_saturated == len(seeds):
+            a.refuse(
+                "all_blobs_saturated",
+                f"all {n_saturated} detected blob(s) had a clipped (saturated) core -- FWHM/ellipticity from a "
+                "clipped PSF core is biased, not just noisy",
+                n_saturated,
+                0,
+            )
+        else:
+            a.refuse("no_usable_blobs", "every detected blob had non-positive background-subtracted flux", 0, 1)
         return a
 
-    a.result = {"stars": stars, "center": list(center), "n_stars": len(stars)}
+    a.result = {"stars": stars, "center": list(center), "n_stars": len(stars), "n_saturated_excluded": n_saturated}
     return a

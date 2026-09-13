@@ -61,6 +61,51 @@ def test_no_blobs_refusal():
     assert analysis.refusals[0].check == "no_blobs_detected"
 
 
+def test_saturated_star_is_refused_instead_of_reporting_a_biased_fwhm():
+    """A fully clipped star's second-moment FWHM/ellipticity are biased
+    (measured wide, not just noisy) because the intensity-weighted moment
+    spreads over the whole flat-topped clipped core -- ``saturation_dn``
+    (the frame's real ceiling) must exclude it, refusing outright since it's
+    the only star."""
+    model = synth_sensor.SensorModel(
+        shape=(240, 320), read_noise_e=1.0, gain_e_per_dn=2.0, black_dn=100.0,
+        prnu_std=0.0, dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0, full_well_e=40000.0,
+    )
+    rng = np.random.default_rng(9)
+    stars = [{"x": 100.0, "y": 80.0, "amplitude": 5.0e6, "sigma_major": 10.0, "sigma_minor": 4.0, "theta_deg": 40.0}]
+    frame = synthlens.render_stars(model, stars, rng=rng, exposure_s=0.3, background_flux_e_per_s=20.0)
+    plane = rawmod.planes(frame)["G1"]
+    assert plane.max() >= model.white_level  # sanity: this star really is clipped
+
+    unaware = P.psf_field(plane)
+    assert unaware.ok  # documents the pre-fix blind spot: no saturation_dn, no refusal
+    assert unaware.result["stars"][0]["sigma_major"] > 10.0 / 2.0 * 1.3  # biased >30% wide vs. the true PSF
+
+    aware = P.psf_field(plane, saturation_dn=model.white_level)
+    assert not aware.ok
+    assert aware.refusals[0].check == "all_blobs_saturated"
+
+
+def test_partial_saturation_excludes_only_the_saturated_star():
+    model = synth_sensor.SensorModel(
+        shape=(240, 320), read_noise_e=1.0, gain_e_per_dn=2.0, black_dn=100.0,
+        prnu_std=0.0, dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0, full_well_e=40000.0,
+    )
+    rng = np.random.default_rng(11)
+    stars = [
+        {"x": 80.0, "y": 60.0, "amplitude": 1.5e5, "sigma_major": 5.0, "sigma_minor": 5.0, "theta_deg": 0.0},
+        {"x": 220.0, "y": 160.0, "amplitude": 6.0e4, "sigma_major": 5.0, "sigma_minor": 5.0, "theta_deg": 0.0},
+    ]
+    frame = synthlens.render_stars(model, stars, rng=rng, exposure_s=0.3, background_flux_e_per_s=20.0)
+    plane = rawmod.planes(frame)["G1"]
+
+    analysis = P.psf_field(plane, saturation_dn=model.white_level)
+    assert analysis.ok
+    assert analysis.result["n_saturated_excluded"] == 1
+    assert analysis.result["n_stars"] == 1
+    assert analysis.result["stars"][0]["x"] == pytest.approx(220.0 / 2.0, abs=2.0)
+
+
 def test_sagittal_vs_meridional_classification():
     # major axis pointing straight along the radial direction from center -> sagittal
     center = (100.0, 100.0)

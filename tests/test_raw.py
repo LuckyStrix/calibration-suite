@@ -47,7 +47,17 @@ def test_optical_black_is_near_bias_level_even_when_visible_saturates():
     ob = raw.optical_black(frame)
     assert set(ob) == {"R", "G1", "G2", "B"}
     for arr in ob.values():
-        assert arr.mean() == pytest.approx(model.black_dn, abs=30.0)
+        # Each channel's optical-black region here averages >400 pixels of
+        # read noise (3e- RMS / gain 2 = 1.5 DN/px) plus negligible dark
+        # current (0.05 e/s * 1s) -- the mean's own std is ~1.5/sqrt(432)
+        # ~= 0.07 DN, and 30 random seeds never exceeded 0.22 DN of
+        # deviation from black_dn. abs=30.0 (nearly 140x that worst case)
+        # would pass even if optical_black() silently mixed in a chunk of
+        # the visible (near-saturated) region, or dropped the bias
+        # baseline entirely and read raw electron counts instead of DN --
+        # abs=2.0 leaves a comfortable ~9x margin over the worst observed
+        # seed while still catching either of those.
+        assert arr.mean() == pytest.approx(model.black_dn, abs=2.0)
 
     visible_mean = raw.planes(frame)["R"].mean()
     assert visible_mean >= frame.white_level - 5  # visible area clipped near white, in contrast

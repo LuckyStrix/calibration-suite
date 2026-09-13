@@ -171,6 +171,42 @@ def test_lens_export_includes_vignetting_from_a_saved_flats_record(tmp_path, mon
     assert 'k1="-0.340000"' in xml_text
 
 
+def test_lens_psf_command_refuses_a_saturated_star_field_end_to_end(tmp_path, monkeypatch):
+    """The full ``calsuite lens psf`` path -- not just ``psf.psf_field``
+    directly -- must refuse a saturated star field: non-zero exit code, a
+    saved record with ``status="refused"``, and the refusal visible in the
+    HTML report (house rule 3's refusal has to actually reach the user, not
+    just live inside the pure-analysis return value)."""
+    records_dir = tmp_path / "records"
+    monkeypatch.setenv("CALSUITE_RECORDS", str(records_dir))
+    model = synth_sensor.SensorModel(
+        shape=(240, 320), read_noise_e=1.0, gain_e_per_dn=2.0, black_dn=100.0,
+        prnu_std=0.0, dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0, full_well_e=40000.0,
+    )
+    rng = np.random.default_rng(9)
+    stars = [{"x": 100.0, "y": 80.0, "amplitude": 5.0e6, "sigma_major": 10.0, "sigma_minor": 4.0, "theta_deg": 40.0}]
+    frame = synthlens.render_stars(model, stars, rng=rng, exposure_s=0.3, background_flux_e_per_s=20.0)
+    folder = tmp_path / "psf_capture"
+    folder.mkdir()
+    rawmod.save_npz(frame, folder / "f0000.npz")
+
+    rc = cli.main(["lens", "psf", "--from", str(folder)])
+    assert rc == 1
+
+    st = store.Store(records_dir)
+    records = list(st.all(kind="lens.psf"))
+    assert len(records) == 1
+    assert records[0].status == "refused"
+    assert records[0].refusals[0]["check"] == "all_blobs_saturated"
+    device_id = records[0].device["id"]
+
+    out_path = tmp_path / "report.html"
+    rc = cli.main(["lens", "report", "--device-id", device_id, "--lens-model", "Test Lens 50mm", "--out", str(out_path)])
+    assert rc == 0
+    html = out_path.read_text(encoding="utf-8")
+    assert "all_blobs_saturated" in html or "refused" in html.lower()
+
+
 def test_lens_report_includes_vignetting_section_for_a_saved_flats_record(tmp_path, monkeypatch):
     """Same wiring gap as the export command: `render_lens_report` already
     renders a "Vignetting" section whenever it's given

@@ -59,6 +59,36 @@ def test_scale_error_is_not_reliably_recovered_by_this_method():
     assert abs(a.result["scale_error_pct"]) < 2.0
 
 
+def test_flux_scale_covariance():
+    """flux_rate_dn_per_s must scale exactly with the illumination flux;
+    latency_s and scale_error_pct are cross-calibrated, dimensionless-in-
+    flux quantities (see bulb.py's own docstring on the method's blind
+    spot) and must not move when only the absolute flux level changes."""
+    black_dn, gain = 512.0, 2.0
+    latency_s, scale = 0.15, 1.0
+    model = synth_sensor.SensorModel(
+        shape=(96, 96), black_dn=black_dn, gain_e_per_dn=gain, read_noise_e=0.0,
+        prnu_std=0.0, dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0,
+    )
+    # Short commanded lengths (unlike the other bulb tests' 10-160s) so the
+    # 4x flux comparison below stays well under the model's default full
+    # well (40000 e-) at every commanded length -- this property is about
+    # flux scaling, not about probing clipping.
+    commanded = [1.0, 2.0, 4.0, 8.0, 16.0]
+
+    def run(flux):
+        rng = np.random.default_rng(0)
+        frames = _frames_for_commanded(model, commanded, latency_s, scale, flux, rng)
+        return bulb.analyze_bulb_timing(frames, commanded, black_dn)
+
+    a1 = run(400.0)
+    a2 = run(1600.0)
+    assert a1.ok and a2.ok
+    assert a2.result["flux_rate_dn_per_s"] == pytest.approx(4 * a1.result["flux_rate_dn_per_s"], rel=1e-3)
+    assert a1.result["latency_s"] == pytest.approx(a2.result["latency_s"], rel=1e-2)
+    assert a1.result["scale_error_pct"] == pytest.approx(a2.result["scale_error_pct"], abs=0.05)
+
+
 def test_refuses_with_too_few_points():
     black_dn, gain = 512.0, 2.0
     model = synth_sensor.SensorModel(shape=(32, 32), black_dn=black_dn, gain_e_per_dn=gain)

@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -131,6 +133,46 @@ def test_narrow_shot_noise_region_refusal_fires_on_curved_data():
     fitted = ptc._fit_channel(points, refusals)
     assert fitted is None
     assert refusals and refusals[0][0] == "narrow_shot_noise_region"
+
+
+def _shift_dn(frame, offset):
+    cfa = frame.cfa.astype(np.float64) + offset
+    return replace(
+        frame,
+        cfa=np.clip(cfa, 0, 65535).astype(np.uint16),
+        black_level=tuple(b + offset for b in frame.black_level),
+        white_level=frame.white_level + offset,
+    )
+
+
+def test_black_offset_invariance():
+    """Adding a constant DN offset to every frame, with the declared
+    black_dn shifted to match, must leave gain AND read noise unchanged.
+
+    Gain is a plain (free-intercept) OLS slope in signal_dn, which is
+    shift-invariant in x almost by definition of linear regression -- so
+    checking gain alone wouldn't actually exercise the black-handling
+    code. read_noise_e comes from the fit's *intercept* (an extrapolation
+    to signal_dn == 0), which DOES move if signal_dn is computed from the
+    wrong black level -- that's the half of this test that can actually
+    fail (confirmed by deliberately hardcoding the black subtraction in
+    ptc._level_stats and re-running: read_noise_e diverges between the
+    unshifted and shifted runs while gain does not, then restored).
+    """
+    gain, read_noise_e, black_dn = 2.5, 3.0, 512.0
+    levels = np.linspace(500, 32000, 12)
+    pairs = _pairs_at_levels(levels, gain, read_noise_e, black_dn, shape=(128, 128))
+    a1 = ptc.analyze_ptc(pairs, black_dn)
+
+    offset = 300.0
+    pairs_shifted = [(_shift_dn(a, offset), _shift_dn(b, offset)) for a, b in pairs]
+    a2 = ptc.analyze_ptc(pairs_shifted, black_dn + offset)
+
+    assert a1.ok and a2.ok
+    for ch in ptc.CHANNELS:
+        f1, f2 = a1.result["channels"][ch]["fit"], a2.result["channels"][ch]["fit"]
+        assert f1["gain_e_per_dn"] == pytest.approx(f2["gain_e_per_dn"], rel=1e-9)
+        assert f1["read_noise_e"] == pytest.approx(f2["read_noise_e"], rel=1e-6)
 
 
 def test_narrow_shot_noise_region_does_not_fire_on_a_clean_line():

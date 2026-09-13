@@ -100,8 +100,19 @@ def trc_fit(channel_ramps: dict, black_y: float = 0.0) -> Analysis:
         pred = slope * log_level + intercept
         ss_res = float(np.sum((log_y - pred) ** 2))
         ss_tot = float(np.sum((log_y - log_y.mean()) ** 2)) or 1e-12
+        r2 = float(1.0 - ss_res / ss_tot)
+        if r2 < dc.TRC_MIN_R2:
+            analysis.refuse(
+                f"trc_{ch}_poor_fit",
+                f"channel {ch}'s gamma fit r^2 {r2:.3f} is below {dc.TRC_MIN_R2} -- the ramp doesn't follow a "
+                "power law closely enough to trust a single gamma number (noisy, non-monotonic, or "
+                "mismatched level/measurement pairing)",
+                r2,
+                dc.TRC_MIN_R2,
+            )
+            continue
         gammas[ch] = float(slope)
-        r2s[ch] = float(1.0 - ss_res / ss_tot)
+        r2s[ch] = r2
         luts[ch] = [float(v) for v in y_norm]
     analysis.result["effective_gamma"] = gammas
     analysis.result["lut"] = luts
@@ -233,6 +244,20 @@ def uniformity(grid_xyz) -> Analysis:
             f"expected a square (n, n, 3) grid, got {grid.shape}",
             list(grid.shape),
             None,
+        )
+        return analysis
+    if n < dc.UNIFORMITY_MIN_N:
+        # A 1x1 grid compares the center cell against itself -- a
+        # mathematically guaranteed "perfectly uniform" result no matter
+        # what the real panel looks like (house rule 3: a tight fit on a
+        # degenerate dataset, here the tightest possible one, is the real
+        # failure mode). See dc.UNIFORMITY_MIN_N's own comment.
+        analysis.refuse(
+            "uniformity_too_few_points",
+            f"{n}x{n} grid has too few points to characterize uniformity, need >= "
+            f"{dc.UNIFORMITY_MIN_N}x{dc.UNIFORMITY_MIN_N}",
+            n,
+            dc.UNIFORMITY_MIN_N,
         )
         return analysis
     center = grid[n // 2, n // 2]

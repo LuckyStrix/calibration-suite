@@ -115,7 +115,16 @@ class Record:
 
     @classmethod
     def from_dict(cls, d: dict) -> Record:
-        return cls(**d)
+        schema = d.get("schema")
+        if isinstance(schema, int) and schema > SCHEMA_VERSION:
+            raise UnsupportedSchemaError(
+                f"record schema {schema} is newer than this calsuite understands (schema {SCHEMA_VERSION}) "
+                "-- upgrade calsuite before reading it, don't guess at the missing fields"
+            )
+        try:
+            return cls(**d)
+        except TypeError as exc:
+            raise RecordCorruptError(f"record does not match schema {SCHEMA_VERSION}: {exc}") from exc
 
     @classmethod
     def from_analysis(
@@ -157,6 +166,37 @@ class ExportRefused(RuntimeError):
     """Raised by ``require_exportable`` -- a record that failed its checks,
     or carries weak provenance, is not fit to hand to lensfun/ICC/DCP
     export."""
+
+
+class RecordCorruptError(RuntimeError):
+    """A record file on disk isn't valid JSON, or doesn't match the current
+    schema shape (missing/extra fields ``Record`` doesn't accept) -- e.g. a
+    truncated write from a killed process. Raised with the path (for
+    ``Store.load``/``Store.all``) so the failure is diagnosable without
+    re-deriving which of possibly hundreds of files under ``records/`` is
+    the bad one. Deliberately *not* swallowed and skipped by ``Store.all``:
+    a store is exactly the thing every downstream check (``doctor.py``,
+    every report) trusts, so silently dropping one unreadable record would
+    hide the one failure mode -- a corrupted file -- that most needs
+    surfacing, not the one safe to ignore."""
+
+
+class ArtifactTamperedError(RuntimeError):
+    """Raised by ``Store.load_artifact`` when an ``.npz`` sidecar's current
+    SHA-256 doesn't match the hash its record was saved with -- the file
+    was altered (or replaced) after ``Store.save`` wrote it. The whole
+    point of recording an artifact's hash (``save``'s docstring) is that a
+    later reader can tell; returning the array data anyway without checking
+    would make that recorded hash decorative."""
+
+
+class UnsupportedSchemaError(RuntimeError):
+    """Raised by ``Record.from_dict`` when a record's ``schema`` is newer
+    than this ``calsuite``'s ``SCHEMA_VERSION`` understands -- reading it
+    with an older schema's field set would silently drop or misinterpret
+    whatever the newer schema added, which is worse than refusing outright
+    (house rule 3's logic applied to the store itself, not just an
+    analysis)."""
 
 
 def require_exportable(record: Record) -> None:
@@ -222,11 +262,36 @@ class Store:
     # -- reading -----------------------------------------------------------
 
     def load(self, path: Path | str) -> Record:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        return Record.from_dict(data)
+        path = Path(path)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise RecordCorruptError(f"{path}: not valid JSON ({exc})") from exc
+        try:
+            return Record.from_dict(data)
+        except RecordCorruptError as exc:
+            raise RecordCorruptError(f"{path}: {exc}") from exc
+        except UnsupportedSchemaError as exc:
+            raise UnsupportedSchemaError(f"{path}: {exc}") from exc
 
     def load_artifact(self, record: Record, name: str) -> dict:
+        """Load the ``name`` artifact sidecar for ``record``, verifying its
+        current SHA-256 against the one ``save()`` recorded on
+        ``record.artifacts`` -- see ``ArtifactTamperedError``. A record with
+        no matching ``artifacts`` entry (e.g. one built by hand in a test,
+        or from an older schema that didn't record one) can't be verified;
+        it's loaded as-is rather than refused, since "unverifiable" and
+        "verified tampered" are different findings.
+        """
         path = self._artifact_path(record, name)
+        expected = next((a["sha256"] for a in record.artifacts if a.get("name") == name), None)
+        if expected is not None:
+            actual = sha256_file(path)
+            if actual != expected:
+                raise ArtifactTamperedError(
+                    f"{path}: sha256 {actual} does not match record {record.id}'s recorded "
+                    f"sha256 {expected} for artifact {name!r} -- the sidecar was altered after save()"
+                )
         with np.load(path) as npz:
             return {k: npz[k] for k in npz.files}
 

@@ -32,6 +32,38 @@ def test_synthetic_measure_profile_validate_report_end_to_end(tmp_path, monkeypa
     assert "Δ" in html
 
 
+def test_display_measure_refuses_a_degenerate_uniformity_grid_end_to_end(tmp_path, monkeypatch):
+    """The full ``calsuite display measure`` path -- not just
+    ``analysis.uniformity`` directly -- must refuse a too-small uniformity
+    grid: non-zero exit code, a saved record with ``status="refused"``, and
+    the refusal visible in the report. A real capture always builds the
+    design's 5x5 grid (`patches.uniformity_grid()`'s default), so this
+    stands in for a future/alternate caller that hands the analysis fewer
+    points -- monkeypatched here at the one seam `display/commands.py`
+    calls through (`patches.uniformity_grid`)."""
+    monkeypatch.setenv("CALSUITE_RECORDS", str(tmp_path))
+    device_id = "synthetic-display-degenerate-uniformity"
+
+    from calsuite.display import patches as patchesmod
+
+    real_uniformity_grid = patchesmod.uniformity_grid
+    monkeypatch.setattr(patchesmod, "uniformity_grid", lambda *a, **k: real_uniformity_grid(n=1))
+
+    rc = cli.main(["display", "measure", "--backend", "synthetic", "--device-id", device_id, "--steps", "9"])
+    assert rc == 1
+
+    st = storemod.Store(tmp_path)
+    records = list(st.all(kind="display.measurement"))
+    assert len(records) == 1
+    assert records[0].status == "refused"
+    assert any(r["check"] == "uniformity_too_few_points" for r in records[0].refusals)
+
+    rc = cli.main(["display", "report", "--device-id", device_id, "--out", str(tmp_path / "report.html")])
+    assert rc == 0
+    html = (tmp_path / "report.html").read_text(encoding="utf-8")
+    assert "uniformity_too_few_points" in html or "refused" in html.lower()
+
+
 def test_report_and_record_round_trip_a_delta_character(tmp_path, monkeypatch):
     """Regression guard for the Windows cp1252-vs-'Δ' bug: both file
     formats every area writes -- a JSON record (`store.Store.save`/

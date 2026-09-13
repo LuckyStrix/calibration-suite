@@ -20,6 +20,7 @@ from calsuite.lens.constants import (
     MTF_MIN_CONTRAST,
     MTF_MIN_ROWS,
     MTF_OVERSAMPLE,
+    MTF_SATURATION_FRACTION,
     R100_PIXEL_PITCH_MM,
 )
 
@@ -91,10 +92,16 @@ def _mtf50(freqs: np.ndarray, mtf: np.ndarray) -> float:
     return float(f0 + frac * (f1 - f0))
 
 
-def edge_sfr(roi: np.ndarray, *, oversample: int = MTF_OVERSAMPLE) -> Analysis:
+def edge_sfr(roi: np.ndarray, *, oversample: int = MTF_OVERSAMPLE, saturation_dn: float | None = None) -> Analysis:
     """One ROI's e-SFR/MTF. ``roi`` is a single-plane 2D array (plane px,
     e.g. one cell of ``mtf_field_grid``'s grid) whose columns cross a
-    single slanted edge in every row.
+    single slanted edge in every row. ``saturation_dn``, when given (the
+    frame's own ``raw.RawFrame.white_level``), refuses a ROI whose bright
+    plateau reaches the sensor's saturation ceiling -- a clipped edge
+    transition biases MTF50 *upward*, not down, so Michelson contrast alone
+    (which a clipped ROI can still pass comfortably) doesn't catch it; see
+    lens/constants.py's ``MTF_SATURATION_FRACTION`` for the numeric check
+    this bit avoided.
 
     ``Analysis.result``: ``mtf50_cycles_per_plane_px``,
     ``mtf50_cycles_per_sensor_px`` (x0.5, since a plane pixel spans two
@@ -106,6 +113,19 @@ def edge_sfr(roi: np.ndarray, *, oversample: int = MTF_OVERSAMPLE) -> Analysis:
     if roi.shape[0] < MTF_MIN_ROWS:
         a.refuse("too_few_rows", f"ROI has {roi.shape[0]} rows, need >= {MTF_MIN_ROWS}", roi.shape[0], MTF_MIN_ROWS)
         return a
+
+    if saturation_dn is not None:
+        roi_max = float(roi.max())
+        ceiling = saturation_dn * MTF_SATURATION_FRACTION
+        if roi_max >= ceiling:
+            a.refuse(
+                "saturated",
+                f"ROI's brightest pixel ({roi_max:g}) reaches the sensor's saturation level "
+                f"({saturation_dn:g}) -- a clipped edge transition biases MTF50, it doesn't just lose contrast",
+                roi_max,
+                ceiling,
+            )
+            return a
 
     slope, intercept, positions, low, high = _fit_edge_line(roi)
     if positions is None:
@@ -156,7 +176,13 @@ def edge_sfr(roi: np.ndarray, *, oversample: int = MTF_OVERSAMPLE) -> Analysis:
     return a
 
 
-def mtf_field_grid(plane: np.ndarray, *, grid: tuple = MTF_FIELD_GRID, oversample: int = MTF_OVERSAMPLE) -> Analysis:
+def mtf_field_grid(
+    plane: np.ndarray,
+    *,
+    grid: tuple = MTF_FIELD_GRID,
+    oversample: int = MTF_OVERSAMPLE,
+    saturation_dn: float | None = None,
+) -> Analysis:
     """Split ``plane`` into a ``grid = (rows, cols)`` field grid (default
     3x5, docs/design.md §4.4's "5x3 field grid"), run ``edge_sfr`` on each
     cell, and collect an MTF50 map. A cell that refuses is recorded (its
@@ -164,7 +190,8 @@ def mtf_field_grid(plane: np.ndarray, *, grid: tuple = MTF_FIELD_GRID, oversampl
     record -- a real target photograph legitimately loses edge contrast in
     some corners at wide field angles, and that's the "sweet spot"
     information this measurement exists to show, not a failure. The
-    overall record only refuses if *every* cell failed."""
+    overall record only refuses if *every* cell failed. ``saturation_dn``
+    is forwarded to every cell's ``edge_sfr`` call (see its docstring)."""
     a = Analysis()
     n_rows, n_cols = grid
     h, w = plane.shape
@@ -176,7 +203,7 @@ def mtf_field_grid(plane: np.ndarray, *, grid: tuple = MTF_FIELD_GRID, oversampl
     for i in range(n_rows):
         for j in range(n_cols):
             roi = plane[i * cell_h : (i + 1) * cell_h, j * cell_w : (j + 1) * cell_w]
-            cell_analysis = edge_sfr(roi, oversample=oversample)
+            cell_analysis = edge_sfr(roi, oversample=oversample, saturation_dn=saturation_dn)
             if cell_analysis.ok:
                 n_ok += 1
                 mtf50_map[i][j] = cell_analysis.result["mtf50_cycles_per_sensor_px"]

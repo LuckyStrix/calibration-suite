@@ -1,6 +1,7 @@
 from dataclasses import replace
 
 import numpy as np
+import pytest
 
 from calsuite.camera import shutter
 from calsuite.synth import sensor as synth_sensor
@@ -52,6 +53,38 @@ def test_detects_a_fixed_shutter_lag_worst_at_fast_speeds():
     fastest, slowest = min(nominal_speeds), max(nominal_speeds)
     assert abs(errors[fastest]) > abs(errors[slowest])
     assert abs(errors[fastest]) > 10.0
+
+
+def test_flux_scale_covariance():
+    """flux_rate_dn_per_s is signal-referenced and must scale exactly with
+    the illumination flux; pct_error is a dimensionless ratio (inferred
+    time / nominal time) and must NOT depend on the absolute flux used to
+    measure it -- only on the shape of the timing error across speeds."""
+    black_dn, gain = 512.0, 2.0
+    model = synth_sensor.SensorModel(
+        shape=(96, 96), black_dn=black_dn, gain_e_per_dn=gain, read_noise_e=0.0,
+        prnu_std=0.0, dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0,
+    )
+    speeds = [1 / 4000, 1 / 1000, 1 / 250, 1 / 60, 1 / 15]
+    lag_s = 1e-4
+
+    def run(flux):
+        rng = np.random.default_rng(0)
+        frames = [_frame_at_speed(model, s, s + lag_s, flux, rng) for s in speeds]
+        return shutter.analyze_shutter_accuracy(frames, black_dn)
+
+    a1 = run(20000.0)
+    a2 = run(80000.0)
+    assert a1.ok and a2.ok
+    assert a2.result["flux_rate_dn_per_s"] == pytest.approx(4 * a1.result["flux_rate_dn_per_s"], rel=1e-3)
+    # abs, not rel: the fastest speed's signal is only a handful of
+    # electrons (this method's own known-limited regime), so shot noise's
+    # *relative* contribution genuinely differs a little between the two
+    # flux levels -- a real, physical effect, not a bug. What must NOT
+    # happen is the sizeable (order-of-magnitude) swing a unit-mixing bug
+    # (e.g. using raw signal_dn instead of the calibrated actual_s) would
+    # produce.
+    assert np.array(a1.result["pct_error"]) == pytest.approx(np.array(a2.result["pct_error"]), abs=1.0)
 
 
 def test_refuses_with_too_few_speeds():
