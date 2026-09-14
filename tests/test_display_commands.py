@@ -32,6 +32,43 @@ def test_synthetic_measure_profile_validate_report_end_to_end(tmp_path, monkeypa
     assert "Δ" in html
 
 
+def test_display_profile_with_no_measurement_saves_refused_record_not_nothing(tmp_path, monkeypatch):
+    """Regression: 'display profile' with no prior 'display measure' run
+    used to print a message and return 1 with no display.profile record
+    saved at all -- the same vanishing-record shape as
+    camera.commands._cmd_iso's missing-full-well path. It must now save a
+    refused record naming the cause."""
+    monkeypatch.setenv("CALSUITE_RECORDS", str(tmp_path))
+    device_id = "never-measured-display"
+
+    rc = cli.main(["display", "profile", "--device-id", device_id, "--out", str(tmp_path / "profile.icc")])
+    assert rc == 1
+    assert not (tmp_path / "profile.icc").exists()
+
+    st = storemod.Store(tmp_path)
+    records = list(st.all(kind="display.profile", device_id=device_id))
+    assert len(records) == 1, "the record must be saved, not silently dropped"
+    assert records[0].status == "refused"
+    assert records[0].provenance == "derived"
+    assert any(r["check"] == "no_passing_measurement" for r in records[0].refusals)
+
+
+def test_display_validate_with_no_profile_saves_refused_record_not_nothing(tmp_path, monkeypatch):
+    """Same shape as the profile test above, one step further down the
+    chain: 'display validate' with no prior 'display profile' record."""
+    monkeypatch.setenv("CALSUITE_RECORDS", str(tmp_path))
+    device_id = "never-profiled-display"
+
+    rc = cli.main(["display", "validate", "--backend", "synthetic", "--device-id", device_id])
+    assert rc == 1
+
+    st = storemod.Store(tmp_path)
+    records = list(st.all(kind="display.validation", device_id=device_id))
+    assert len(records) == 1, "the record must be saved, not silently dropped"
+    assert records[0].status == "refused"
+    assert any(r["check"] == "no_passing_profile" for r in records[0].refusals)
+
+
 def test_display_measure_refuses_a_degenerate_uniformity_grid_end_to_end(tmp_path, monkeypatch):
     """The full ``calsuite display measure`` path -- not just
     ``analysis.uniformity`` directly -- must refuse a too-small uniformity

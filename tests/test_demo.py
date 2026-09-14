@@ -11,9 +11,12 @@ from __future__ import annotations
 import json
 import os
 
+import numpy as np
 import pytest
 
 from calsuite import demo, store as storemod
+from calsuite.camera import ptc
+from calsuite.synth import sensor as synth_sensor
 
 
 @pytest.fixture(scope="module")
@@ -99,3 +102,37 @@ def test_run_demo_restores_the_records_env_var(tmp_path, monkeypatch):
     monkeypatch.setenv("CALSUITE_RECORDS", "/should/not/be/touched")
     demo.run_demo(tmp_path)
     assert os.environ["CALSUITE_RECORDS"] == "/should/not/be/touched"
+
+
+@pytest.mark.parametrize("seed_offset", [7, 29, 42, 67])
+def test_ptc_leg_passes_under_noise_realizations_that_used_to_refuse_it(seed_offset):
+    """Regression for the ISO-1600 PTC leg's flaky boundary refusal: with
+    the old 10-level, 96x96-frame construction, these exact (seed offset,
+    ISO) combinations pushed a channel's worst shot-noise-region residual
+    past PTC_RESIDUAL_FRACTION_MAX purely from finite-sample noise (no
+    PRNU/DSNU is modeled here at all) -- not a real physical effect, just
+    too little statistical power in the fit. demo.py's PTC construction
+    (PTC_DEMO_LEVELS, PTC_DEMO_SHAPE) now matches docs/design.md §3.1's
+    own "20-30 signal levels" guidance; this replicates demo._run_sensor's
+    exact per-ISO PTC construction (not the whole expensive `run_demo`) to
+    check it stays clean under noise the old, thinner construction did not
+    survive. A 450-combination sweep (offsets 0-149 x 3 ISOs) at these
+    settings found zero refusals -- these four are a fast, pinned sample
+    of it, not the full sweep (too slow for the default suite budget)."""
+    black_dn, gain, read_noise_e, full_well_e = 512.0, 2.0, 3.0, 40000.0
+    model = synth_sensor.SensorModel(
+        shape=demo.PTC_DEMO_SHAPE, gain_e_per_dn=gain, read_noise_e=read_noise_e, black_dn=black_dn,
+        prnu_std=0.0, dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0, full_well_e=full_well_e,
+    )
+    levels = np.linspace(500.0, 18000.0, demo.PTC_DEMO_LEVELS)
+    for iso_value in (100, 400, 1600):
+        rng = np.random.default_rng(1000 + iso_value + seed_offset)
+        pairs = []
+        for level_e in levels:
+            exposure_s = 0.02
+            flux = level_e / exposure_s
+            a = synth_sensor.frame(model, exposure_s=exposure_s, flux_e_per_s=flux, temp_c=20.0, rng=rng)
+            b = synth_sensor.frame(model, exposure_s=exposure_s, flux_e_per_s=flux, temp_c=20.0, rng=rng)
+            pairs.append((a, b))
+        analysis = ptc.analyze_ptc(pairs, black_dn)
+        assert analysis.ok, f"iso={iso_value} offset={seed_offset}: {[r.message for r in analysis.refusals]}"

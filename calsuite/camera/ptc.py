@@ -99,7 +99,16 @@ def _fit_channel(points: list, channel_refusals: list) -> dict | None:
         kept.pop(int(np.argmax(x)))
 
     if not region_ok:
-        channel_refusals.append(("narrow_shot_noise_region", len(kept), PTC_MIN_SHOT_NOISE_LEVELS))
+        # `len(kept)` is always exactly PTC_MIN_SHOT_NOISE_LEVELS here (the
+        # loop only stops early -- via `break` above -- once the residuals
+        # settle, which sets region_ok=True and skips this branch
+        # entirely), so reporting "N vs threshold N" would read as a count
+        # that failed its own floor, which is never true: the real failure
+        # is that residuals never settled even once trimmed all the way
+        # down to that floor. Report the quantity that actually failed the
+        # comparison -- the worst remaining residual against its own
+        # tolerance -- instead.
+        channel_refusals.append(("narrow_shot_noise_region", float(rel_resid.max()), PTC_RESIDUAL_FRACTION_MAX))
         return None
 
     x = np.array([p["signal_dn"] for p in kept])
@@ -141,6 +150,30 @@ def _fit_channel(points: list, channel_refusals: list) -> dict | None:
     }
 
 
+def _channel_refusal_message(ch: str, check: str, value, threshold) -> str:
+    """One per-channel refusal's human-readable message. Pulled out of
+    ``analyze_ptc`` so it's unit-testable with no synthetic frames/noise
+    involved (a refusal *condition* can legitimately depend on a noise
+    realization; the *wording* of the message it produces should not need
+    a lucky seed to pin down) -- see test_camera_ptc.py's
+    test_channel_refusal_message_* tests.
+
+    ``narrow_shot_noise_region`` gets its own phrasing because its
+    ``value``/``threshold`` are a residual fraction vs. its tolerance, not
+    a plain count vs. a floor (see the comment where that refusal is
+    raised, in ``_fit_channel``) -- the generic "N vs threshold M" template
+    below is only honest for the other checks, where value and threshold
+    really are two counts/numbers on the same axis being compared.
+    """
+    if check == "narrow_shot_noise_region":
+        return (
+            f"channel {ch}: narrow shot noise region: even trimmed down to the "
+            f"minimum {PTC_MIN_SHOT_NOISE_LEVELS} points, the worst residual "
+            f"({value:.1%}) still exceeds the {threshold:.0%} tolerance"
+        )
+    return f"channel {ch}: {check.replace('_', ' ')} ({value} vs threshold {threshold})"
+
+
 def analyze_ptc(pairs: list, black_dn) -> Analysis:
     """``pairs``: a list of ``(frame_a, frame_b)`` at increasing signal
     levels (ideally 20-30, design doc §3.1). ``black_dn``: a float or
@@ -174,12 +207,7 @@ def analyze_ptc(pairs: list, black_dn) -> Analysis:
             **({"fit": fitted} if fitted is not None else {}),
         }
         for check, value, threshold in channel_refusals:
-            a.refuse(
-                f"{check}[{ch}]",
-                f"channel {ch}: {check.replace('_', ' ')} ({value} vs threshold {threshold})",
-                value=value,
-                threshold=threshold,
-            )
+            a.refuse(f"{check}[{ch}]", _channel_refusal_message(ch, check, value, threshold), value=value, threshold=threshold)
 
     a.result = {"channels": channels_result}
     a.residuals = {

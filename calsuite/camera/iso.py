@@ -14,17 +14,28 @@ from calsuite.camera.constants import ISO_INVARIANCE_TOLERANCE_PCT, ISO_MIN_COUN
 from calsuite.fit import Analysis
 
 
-def analyze_iso_invariance(read_noise_e_by_iso: dict, full_well_e_by_iso) -> Analysis:
+def analyze_iso_invariance(read_noise_e_by_iso: dict, full_well_e_by_iso, *, refused_ptc_isos: list | None = None) -> Analysis:
     """``read_noise_e_by_iso``: ``{iso: input-referred read noise in
     electrons}``. ``full_well_e_by_iso``: same shape, or a single float
     applied at every ISO (a truly ISO-invariant sensor's full well in
     electrons is roughly constant across ISO -- only its value in DN
-    shrinks as gain increases).
+    shrinks as gain increases), or empty/``None`` if no ``camera.linearity``
+    record had one to give. ``refused_ptc_isos``: ISOs whose ``camera.ptc``
+    record is on record as refused, purely to name a likely cause in the
+    ``no_full_well`` message below -- optional, and never itself a reason
+    to refuse (a refused camera.ptc at one ISO doesn't prevent computing
+    the invariance curve from the *other*, ok, ISOs).
 
     Recommended ISO is the *lowest* ISO whose read noise is within
     ``ISO_INVARIANCE_TOLERANCE_PCT`` of the minimum across the sweep --
     "lowest" because raising ISO past the invariance point buys nothing
     (design doc's star-tracker sentence) but does cost highlight headroom.
+
+    Refuses (house rule 3 -- these are findings, not reasons to save no
+    record at all; ``camera/commands.py::_cmd_iso`` always reaches
+    ``_save`` now, so both checks below land in a real, readable record)
+    if there's too little data to characterize the curve at all, or no
+    electron-domain full well to pair it with -- both can fire together.
     """
     a = Analysis()
     if len(read_noise_e_by_iso) < ISO_MIN_COUNT:
@@ -35,6 +46,15 @@ def analyze_iso_invariance(read_noise_e_by_iso: dict, full_well_e_by_iso) -> Ana
             value=len(read_noise_e_by_iso),
             threshold=ISO_MIN_COUNT,
         )
+
+    if not full_well_e_by_iso:
+        if refused_ptc_isos:
+            cause = f"upstream camera.ptc refused at ISO {', '.join(str(i) for i in refused_ptc_isos)}"
+        else:
+            cause = "no ok camera.linearity record has a known electron-domain full well"
+        a.refuse("no_full_well", f"no exportable full well: {cause}")
+
+    if not a.ok:
         return a
 
     isos = sorted(read_noise_e_by_iso)

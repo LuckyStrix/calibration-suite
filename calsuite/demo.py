@@ -41,6 +41,13 @@ LENS_MODEL_REFUSAL_EXAMPLE = "calsuite-demo-lens-50mm-narrow-coverage-example"
 DISPLAY_DEVICE_ID = "calsuite-demo-display"
 SPECTRAL_CAMERA_MODEL = "calsuite-demo-spectral"
 
+# PTC leg sizing (see the comment in _run_sensor where these are used): a
+# module-level constant, not a local, so tests/test_demo.py can pin the
+# "passes consistently across noise realizations" fix without duplicating
+# these numbers and risking them drifting out of sync.
+PTC_DEMO_LEVELS = 24
+PTC_DEMO_SHAPE = (128, 128)
+
 
 def _with_meta(frame, **overrides):
     return replace(frame, meta=replace(frame.meta, **overrides))
@@ -90,9 +97,24 @@ def _run_sensor(out_dir: Path, warnings: list) -> Path | None:
     bias_dir = _save_npz_series(bias_frames, frames_root / "bias")
     _run_cli(["camera", "bias", "--from", str(bias_dir)], warnings)
 
-    levels = np.linspace(500.0, 18000.0, 10)
+    # 24 levels (docs/design.md §3.1's own "20-30 signal levels" guidance)
+    # on a larger frame than the other sensor legs use (128x128, not 96x96):
+    # with only 10 levels at 96x96, the shot-noise-region fit -- an OLS
+    # line extrapolated back to signal_dn=0 from data starting at
+    # signal_dn~250 -- had too little statistical power for its own
+    # intercept estimate to stay stable pair-to-pair, so a handful of
+    # noise realizations (e.g. seed offset 7's ISO-1600 leg) pushed a
+    # channel's worst residual past PTC_RESIDUAL_FRACTION_MAX and refused
+    # on a fit that a real 20-30 level PTC session wouldn't have (docs/
+    # design.md's demo is the project's shop window -- it should show a
+    # clean PTC pass, not hang its correctness on a coin flip; the lens
+    # step already has a *deliberate* refusal example built for teaching
+    # that, so this isn't losing the only place a refusal is shown). A
+    # 450-combination sweep (150 seed offsets x 3 ISOs) at these settings
+    # found zero refusals; tests/test_demo.py pins a sample of it.
+    levels = np.linspace(500.0, 18000.0, PTC_DEMO_LEVELS)
     ptc_model = synth_sensor.SensorModel(
-        shape=shape, gain_e_per_dn=gain, read_noise_e=read_noise_e, black_dn=black_dn,
+        shape=PTC_DEMO_SHAPE, gain_e_per_dn=gain, read_noise_e=read_noise_e, black_dn=black_dn,
         prnu_std=0.0, dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0, full_well_e=full_well_e,
     )
     for iso_value in (100, 400, 1600):

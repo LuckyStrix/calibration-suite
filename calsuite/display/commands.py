@@ -441,7 +441,24 @@ def _cmd_profile(args) -> int:
     device = _resolve_device(args.device_id)
     measurement = store.latest("display.measurement", device["id"])
     if measurement is None or measurement.status != "ok":
-        print(f"no passing display.measurement record for device {device['id']!r}")
+        # A missing prerequisite is a finding, not silence (house rule 3):
+        # this used to print and return with no display.profile record
+        # saved at all, which is exactly the shape camera.commands._cmd_iso
+        # had for its own missing-prerequisite path -- name the real cause
+        # and save a refused record, don't vanish.
+        cause = (
+            f"no display.measurement record exists for device {device['id']!r}"
+            if measurement is None
+            else f"the latest display.measurement record ({measurement.id}) is refused"
+        )
+        analysis = Analysis(refusals=[Refusal("no_passing_measurement", f"can't build a profile: {cause}")])
+        record = storemod.Record.from_analysis(
+            kind="display.profile", device=device, analysis=analysis, provenance="derived",
+            method={"name": _METHOD_NAME, "calsuite_version": __version__, "params": {}},
+            derived_from=[measurement.id] if measurement is not None else [],
+        )
+        store.save(record)
+        print(f"refused: {cause}")
         return 1
 
     out_path = Path(args.out) if args.out else config.records_dir() / device["id"] / "display-profile.icc"
@@ -519,7 +536,25 @@ def _cmd_validate(args) -> int:
     device = _resolve_device(args.device_id)
     profile_record = store.latest("display.profile", device["id"])
     if profile_record is None or profile_record.status != "ok":
-        print(f"no passing display.profile record for device {device['id']!r}")
+        # Same missing-prerequisite shape as _cmd_profile above: don't skip
+        # the real backend measurement AND skip saving a record -- name the
+        # cause and save a refused display.validation record (house rule
+        # 3). No fresh measurement is attempted here (there's nothing valid
+        # to validate against), same as _cmd_measure's own HDR pre-flight
+        # refusal already stamps "measured" before any patch is shown.
+        cause = (
+            f"no display.profile record exists for device {device['id']!r}"
+            if profile_record is None
+            else f"the latest display.profile record ({profile_record.id}) is refused"
+        )
+        analysis = Analysis(refusals=[Refusal("no_passing_profile", f"can't validate: {cause}")])
+        record = storemod.Record.from_analysis(
+            kind="display.validation", device=device, analysis=analysis, provenance="measured",
+            method={"name": _METHOD_NAME, "calsuite_version": __version__, "params": {"backend": args.backend}},
+            derived_from=[profile_record.id] if profile_record is not None else [],
+        )
+        store.save(record)
+        print(f"refused: {cause}")
         return 1
     measurement = store.latest("display.measurement", device["id"])
 

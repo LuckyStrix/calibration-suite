@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from calsuite.camera import ptc
+from calsuite.camera.constants import PTC_MIN_SHOT_NOISE_LEVELS, PTC_RESIDUAL_FRACTION_MAX
 from calsuite.synth import sensor as synth_sensor
 
 
@@ -133,6 +134,88 @@ def test_narrow_shot_noise_region_refusal_fires_on_curved_data():
     fitted = ptc._fit_channel(points, refusals)
     assert fitted is None
     assert refusals and refusals[0][0] == "narrow_shot_noise_region"
+
+
+def _points_with_bad_tail(bad_count, mult=4.0):
+    """8 points on a clean line (``var = 0.4 * signal + 9.0``) except the
+    top ``bad_count`` (by signal, i.e. the ones the trim loop removes
+    first) are inflated by ``mult`` so they blow well past
+    ``PTC_RESIDUAL_FRACTION_MAX``. The number of *clean* points left once
+    the trim removes all the bad ones is ``8 - bad_count`` -- this is how
+    the three boundary tests below dial the size of the surviving
+    shot-noise region directly, rather than the total input count (which
+    ``PTC_MIN_LEVELS`` -- a different, larger floor -- already gates)."""
+    signal = np.array([100.0, 200.0, 400.0, 800.0, 1600.0, 3200.0, 6400.0, 12800.0])
+    var = 0.4 * signal + 9.0
+    if bad_count:
+        var[-bad_count:] = var[-bad_count:] * mult
+    return [{"signal_dn": float(s), "var_diff_dn2": float(v), "clipped_fraction": 0.0} for s, v in zip(signal, var, strict=True)]
+
+
+def test_narrow_shot_noise_region_boundary_below_floor_refuses_honestly():
+    """Only 3 clean points survive once the trim removes every corrupted
+    one (bad_count=5 leaves 8-5=3 < PTC_MIN_SHOT_NOISE_LEVELS=4) -- the
+    trim loop can't go below the floor of 4, so it stops there with 1
+    corrupted point still mixed in and refuses. Pins two things: the
+    refusal actually fires (this genuinely is too narrow a region), and
+    the message no longer claims "4 vs threshold 4" (a count that can
+    never be below its own floor) -- it reports the residual that
+    actually failed, which must be a true inequality against its
+    threshold, not an equality."""
+    points = _points_with_bad_tail(bad_count=PTC_MIN_SHOT_NOISE_LEVELS + 1)
+    refusals: list = []
+    fitted = ptc._fit_channel(points, refusals)
+    assert fitted is None
+    assert refusals and refusals[0][0] == "narrow_shot_noise_region"
+    _, value, threshold = refusals[0]
+    assert value > threshold  # a real inequality, not "N vs threshold N"
+    assert threshold == PTC_RESIDUAL_FRACTION_MAX
+
+
+def test_narrow_shot_noise_region_boundary_exactly_at_floor_passes():
+    """Exactly PTC_MIN_SHOT_NOISE_LEVELS (4) clean points survive
+    (bad_count=4 leaves 8-4=4). "At least 4" is inclusive -- landing
+    exactly on the floor with a clean fit must PASS, not refuse."""
+    points = _points_with_bad_tail(bad_count=PTC_MIN_SHOT_NOISE_LEVELS)
+    refusals: list = []
+    fitted = ptc._fit_channel(points, refusals)
+    assert fitted is not None
+    assert not refusals
+    assert fitted["n_levels_used"] == PTC_MIN_SHOT_NOISE_LEVELS
+
+
+def test_narrow_shot_noise_region_boundary_above_floor_passes():
+    """5 clean points survive (bad_count=3 leaves 8-3=5) -- comfortably
+    above the floor, and the trim stops before ever reaching it."""
+    points = _points_with_bad_tail(bad_count=PTC_MIN_SHOT_NOISE_LEVELS - 1)
+    refusals: list = []
+    fitted = ptc._fit_channel(points, refusals)
+    assert fitted is not None
+    assert not refusals
+    assert fitted["n_levels_used"] == PTC_MIN_SHOT_NOISE_LEVELS + 1
+
+
+def test_channel_refusal_message_for_narrow_shot_noise_region_is_a_true_inequality():
+    """``_channel_refusal_message`` (pulled out of ``analyze_ptc`` so this
+    needs no synthetic frames or RNG at all -- a refusal *condition* can
+    legitimately depend on a noise realization; its *wording* should not)
+    must never render "4 vs threshold 4" -- a count sitting exactly on its
+    own floor reported as if it failed a less-than comparison against
+    itself (the original ISO-1600-demo bug, seed offset 7, channel G2).
+    ``narrow_shot_noise_region``'s value/threshold are a residual fraction
+    vs. its tolerance, so a real refusal's value must exceed its
+    threshold, not equal it."""
+    message = ptc._channel_refusal_message("G2", "narrow_shot_noise_region", 0.1147, PTC_RESIDUAL_FRACTION_MAX)
+    assert f"{PTC_MIN_SHOT_NOISE_LEVELS} vs threshold {PTC_MIN_SHOT_NOISE_LEVELS}" not in message
+    assert "11.5%" in message and "8%" in message
+
+
+def test_channel_refusal_message_for_a_plain_count_check_uses_the_generic_template():
+    # too_few_levels/non_positive_slope are genuine value-vs-threshold
+    # comparisons, unlike narrow_shot_noise_region -- the generic template
+    # is honest for these.
+    message = ptc._channel_refusal_message("R", "too_few_levels", 3, ptc.PTC_MIN_LEVELS)
+    assert message == f"channel R: too few levels (3 vs threshold {ptc.PTC_MIN_LEVELS})"
 
 
 def _shift_dn(frame, offset):

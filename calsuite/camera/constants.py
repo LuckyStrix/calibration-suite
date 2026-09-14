@@ -50,8 +50,14 @@ PTC_MIN_LEVELS = 6
 PTC_MIN_SHOT_NOISE_LEVELS = 4
 # After the iterative residual trim (below) removes the high-signal levels
 # where PRNU/nonlinearity start dominating over shot noise, at least this
-# many points must remain for the slope (=1/gain) to be trustworthy. Fewer
-# than 4 points gives a line fit with no real check on its own straightness.
+# many points must remain for the slope (=1/gain) to be trustworthy. "At
+# least" is inclusive: trimming stops once exactly 4 points remain, and if
+# *those* 4 fit the line within PTC_RESIDUAL_FRACTION_MAX, the region is
+# accepted -- 4 is a passing count, not a failing one. Fewer than 4 points
+# gives a line fit with no real check on its own straightness, so the trim
+# never goes below this floor; if the residuals still haven't settled once
+# trimmed down to it, that's a genuine "shot noise region too narrow"
+# finding (see camera/ptc.py::_fit_channel), not an off-by-one on the count.
 
 PTC_RESIDUAL_FRACTION_MAX = 0.08
 # A level is trimmed from the shot-noise region once its variance departs

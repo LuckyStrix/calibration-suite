@@ -383,17 +383,22 @@ def _cmd_bulb(args) -> int:
 
 
 def _cmd_iso(args) -> int:
+    """Missing prerequisites (no ok ``camera.ptc`` records at all, or no
+    exportable electron-domain full well) are findings, not silence (house
+    rule 3): both used to ``print(...); return 1`` with no record saved,
+    which made the record vanish from ``doctor``/the report exactly when
+    there was something to report. Every path below now reaches ``_save``
+    -- ``analyze_iso_invariance`` itself refuses (and names why) when the
+    data it's handed can't support an invariance curve, the same way the
+    already-correct "only 2 ISOs available" case has always worked."""
     from calsuite.camera import iso
 
     st = _store()
-    ptc_records = [r for r in st.all(kind="camera.ptc", device_id=args.device_id) if r.status == "ok"]
-    if not ptc_records:
-        print(f"no ok camera.ptc records found for device {args.device_id}")
-        return 1
+    all_ptc_records = list(st.all(kind="camera.ptc", device_id=args.device_id))
+    ptc_records_ok = [r for r in all_ptc_records if r.status == "ok"]
 
     read_noise_e_by_iso = {}
-    full_well_e_by_iso = {}
-    for r in ptc_records:
+    for r in ptc_records_ok:
         iso_value = r.conditions.get("iso")
         if iso_value is None:
             continue
@@ -403,6 +408,7 @@ def _cmd_iso(args) -> int:
             read_noise_e_by_iso[iso_value] = max(rn)
 
     linearity_records = [r for r in st.all(kind="camera.linearity", device_id=args.device_id) if r.status == "ok"]
+    full_well_e_by_iso = {}
     for r in linearity_records:
         iso_value = r.conditions.get("iso")
         channels = r.result.get("channels", {})
@@ -410,18 +416,33 @@ def _cmd_iso(args) -> int:
         if iso_value is not None and fw:
             full_well_e_by_iso[iso_value] = min(fw)
 
-    if not full_well_e_by_iso:
-        print(f"no camera.linearity records with a known full well for device {args.device_id}; "
-              "run 'calsuite camera ptc' then 'calsuite camera linearity' first")
-        return 1
-    # A truly ISO-invariant sensor's full well in electrons doesn't depend on
-    # ISO; fall back to the single value we have for any ISO camera.ptc
-    # covers but camera.linearity doesn't.
-    default_full_well = next(iter(full_well_e_by_iso.values()))
-    full_well_e_by_iso = {iso_value: full_well_e_by_iso.get(iso_value, default_full_well) for iso_value in read_noise_e_by_iso}
+    if full_well_e_by_iso:
+        # A truly ISO-invariant sensor's full well in electrons doesn't
+        # depend on ISO; fall back to the single value we have for any ISO
+        # camera.ptc covers but camera.linearity doesn't.
+        default_full_well = next(iter(full_well_e_by_iso.values()))
+        full_well_e_by_iso = {
+            iso_value: full_well_e_by_iso.get(iso_value, default_full_well) for iso_value in read_noise_e_by_iso
+        }
 
-    analysis = iso.analyze_iso_invariance(read_noise_e_by_iso, full_well_e_by_iso)
-    device_ref = devicesmod.DeviceRef(kind="camera", model=ptc_records[0].device.get("model", ""), id=args.device_id)
+    # Named for the record/report even when full_well_e_by_iso came back
+    # empty: which ISO(s)' camera.ptc runs are on record as refused, so a
+    # reader isn't left to rediscover on their own that that's *why* no
+    # linearity record downstream had a gain to convert with.
+    refused_ptc_isos = sorted(
+        {r.conditions.get("iso") for r in all_ptc_records if r.status == "refused" and r.conditions.get("iso") is not None}
+    )
+    analysis = iso.analyze_iso_invariance(read_noise_e_by_iso, full_well_e_by_iso, refused_ptc_isos=refused_ptc_isos)
+
+    # Device identity for the record we're about to save either way -- an
+    # empty sweep (no camera.ptc run yet at all) still gets one, so prefer
+    # any record we can find for this device over bailing with none.
+    model = ""
+    for r in all_ptc_records or st.all(device_id=args.device_id):
+        model = r.device.get("model", "")
+        break
+    device_ref = devicesmod.DeviceRef(kind="camera", model=model, id=args.device_id)
+
     return _save(
         st,
         kind="camera.iso",
