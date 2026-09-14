@@ -176,12 +176,25 @@ def test_pwm_banding_recovers_known_frequency():
 
 
 def test_pwm_banding_reports_none_without_pwm():
+    """Regression guard for a real false-positive detector bug (CLAUDE.md's
+    seed sweep found ~30% of seeds failed this): "peak FFT bin / median of
+    the rest" is an extreme-value statistic, and for i.i.d. (no-PWM) row
+    noise its *expected* value alone already sits close to what
+    PWM_FFT_MIN_PROMINENCE used to be (3.0) -- not a fixture artifact, since
+    the ratio is scale-invariant in the noise amplitude and this reproduces
+    at real-camera row counts too (verified empirically for 100-10000
+    rows). Seed 6 with the exact fixture below is a concrete, deterministic
+    reproducer of the old bug (prominence ~3.41 against the old 3.0
+    threshold); the loop below sweeps several more seeds so this doesn't
+    silently regress to another near-coin-flip threshold later.
+    """
     model = DisplayModel(pwm_hz=None)
     rows = render_rolling_shutter_rows(model, (1, 1, 1), n_rows=200, row_period_s=0.0002, exposure_s=1.0 / 8000)
-    rng = np.random.default_rng(0)
-    rows = rows + rng.normal(0, rows.mean() * 1e-4, size=rows.shape)  # avoid a literally-zero-variance FFT
-    result = analysis.pwm_banding(rows, row_period_s=0.0002)
-    assert result.result["detected"] is False
+    for seed in (6, 0, 1, 2, 3, 4, 5, 7, 8, 9):
+        rng = np.random.default_rng(seed)
+        noisy = rows + rng.normal(0, rows.mean() * 1e-4, size=rows.shape)  # avoid a literally-zero-variance FFT
+        result = analysis.pwm_banding(noisy, row_period_s=0.0002)
+        assert result.result["detected"] is False, f"seed {seed}: false PWM detection, prominence={result.result['prominence']}"
 
 
 def test_pwm_banding_refuses_too_few_rows():

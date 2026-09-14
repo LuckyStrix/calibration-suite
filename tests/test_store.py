@@ -1,3 +1,4 @@
+import sys
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -281,6 +282,14 @@ def test_store_latest_with_identical_timestamps_picks_one_deterministically(tmp_
     assert latest.id == r1.id
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="chmod(0o500) on a directory doesn't block writes on Windows the "
+    "way it does on POSIX -- NTFS access is governed by ACLs, not the POSIX "
+    "mode bits Python's os.chmod maps onto there (it only ever toggles the "
+    "read-only *file* attribute), so the store happily saves through it and "
+    "this can't honestly assert 'raises clearly' on that platform.",
+)
 def test_store_save_to_read_only_records_dir_raises_clearly(tmp_path):
     device_dir = tmp_path / _device()["id"]
     device_dir.mkdir(parents=True)

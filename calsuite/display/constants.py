@@ -85,15 +85,26 @@ WARMUP_STABLE_FRACTION = 0.02
 
 # -- PWM banding (design §5.2) -----------------------------------------------
 
-PWM_FFT_MIN_PROMINENCE = 3.0
+PWM_FFT_MIN_PROMINENCE = 8.0
 # A candidate banding peak in the row-mean FFT must be at least this many
 # times the median magnitude of the rest of the (non-DC) spectrum to be
 # reported as a detected PWM frequency rather than sensor read noise --
 # a simple prominence-over-floor test, not a formal peak-detection
-# algorithm; chosen to comfortably reject a flat noise floor (whose peak
-# bin, by chance, still runs a small multiple of the median) while catching
-# a real square-wave-driven banding signal, which concentrates most of its
-# energy in one bin.
+# algorithm. 3.0 (this constant's original value) was not actually a
+# comfortable margin: for i.i.d. (no-PWM) row noise, "max bin / median of
+# the rest" is an extreme-value statistic over ~n_rows/2 samples, and its
+# *expected* value alone already runs 2.5-3.5 for realistic row counts
+# (measured empirically: mean ~2.6 at 100 rows, ~3.1 at 1000, ~3.6 at
+# 10000, 99.9th percentile topping out under ~5 even at 10000 rows) -- so
+# a 3.0 threshold flagged a flicker-free capture as PWM banding on close
+# to a third of random noise realizations
+# (test_pwm_banding_reports_none_without_pwm). A real square-wave-driven
+# banding signal concentrates its energy in one bin so completely that its
+# prominence runs many orders of magnitude above the noise floor (>1e14 in
+# this suite's synthetic round trip even at extreme duty cycles), so 8.0 --
+# comfortably above the measured no-PWM ceiling, with no realistic risk of
+# missing a genuine banding signal -- is the threshold that actually
+# achieves separation instead of a near coin flip.
 
 # -- validation (design §5.6, §10) -------------------------------------------
 # Pass thresholds are multiples of the *backend's own stated accuracy*

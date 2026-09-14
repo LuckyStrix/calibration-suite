@@ -109,3 +109,109 @@ def test_report_survives_a_malformed_empty_fit_dict():
     ptc_record = _record("camera.ptc", {"channels": {"R": {"fit": {}}}})
     html = report.render_sensor_report(device={"kind": "camera", "model": "Canon EOS R100", "id": "x"}, ptc_record=ptc_record)
     assert html.startswith("<!doctype html>")
+
+
+def test_error_budget_all_zero_read_noise_reports_not_measured_instead_of_raising():
+    # Regression guard for the crash CLAUDE.md's seed sweep found:
+    # `read_noise_vals` all zero/falsy used to leave the `if v` filter in
+    # `_error_budget`'s generator expression with nothing for `max()` to
+    # look at, raising `ValueError: max() arg is an empty sequence`. This
+    # is not a synthetic corner case -- `demo._run_sensor()` hits it on a
+    # real fraction of random noise realizations, because a fit can
+    # legitimately land on read_noise_e == 0.0 for a channel. Construct
+    # the all-zero case directly rather than relying on a lucky seed.
+    ptc_record = _record(
+        "camera.ptc",
+        {
+            "channels": {
+                "R": {
+                    "fit": {
+                        "gain_e_per_dn": 2.0,
+                        "gain_uncertainty_e_per_dn": 0.05,
+                        "read_noise_e": 0.0,
+                        "read_noise_uncertainty_e": 0.1,
+                        "signal_dn_used": [10.0],
+                        "var_diff_dn2_used": [5.0],
+                        "n_levels_used": 1,
+                    }
+                },
+                "G1": {
+                    "fit": {
+                        "gain_e_per_dn": 2.1,
+                        "gain_uncertainty_e_per_dn": 0.04,
+                        "read_noise_e": 0.0,
+                        "read_noise_uncertainty_e": 0.2,
+                        "signal_dn_used": [10.0],
+                        "var_diff_dn2_used": [5.0],
+                        "n_levels_used": 1,
+                    }
+                },
+            }
+        },
+    )
+    html = report.render_sensor_report(device={"kind": "camera", "model": "Canon EOS R100", "id": "x"}, ptc_record=ptc_record)
+    assert html.startswith("<!doctype html>")
+    assert "read noise" in html
+    assert "not measured" in html
+
+
+def test_error_budget_all_zero_gain_reports_not_measured_instead_of_raising():
+    # Same shape of bug, the other operand: `gain_vals` all zero used to
+    # divide by zero inside `_error_budget`'s gain generator (that branch
+    # has no `if v` filter at all in the original code), raising
+    # `ZeroDivisionError` instead of degrading to "not measured".
+    ptc_record = _record(
+        "camera.ptc",
+        {
+            "channels": {
+                "R": {
+                    "fit": {
+                        "gain_e_per_dn": 0.0,
+                        "gain_uncertainty_e_per_dn": 0.05,
+                        "read_noise_e": 3.0,
+                        "read_noise_uncertainty_e": 0.1,
+                        "signal_dn_used": [10.0],
+                        "var_diff_dn2_used": [5.0],
+                        "n_levels_used": 1,
+                    }
+                }
+            }
+        },
+    )
+    html = report.render_sensor_report(device={"kind": "camera", "model": "Canon EOS R100", "id": "x"}, ptc_record=ptc_record)
+    assert html.startswith("<!doctype html>")
+    assert "gain" in html
+    assert "not measured" in html
+
+
+def test_error_budget_still_computes_a_real_percentage_when_values_are_nonzero():
+    # Non-regression check alongside the zero-denominator guards above:
+    # a healthy fit (nonzero gain/read-noise values) must still produce a
+    # real achieved percentage, not "not measured".
+    entries = report._error_budget(
+        Record(
+            schema=1,
+            id="camera.ptc-x",
+            kind="camera.ptc",
+            device={"kind": "camera", "model": "Canon EOS R100", "id": "x", "firmware": ""},
+            provenance="measured",
+            status="ok",
+            refusals=[],
+            result={
+                "channels": {
+                    "R": {
+                        "fit": {
+                            "gain_e_per_dn": 2.0,
+                            "gain_uncertainty_e_per_dn": 0.1,
+                            "read_noise_e": 3.0,
+                            "read_noise_uncertainty_e": 0.3,
+                        }
+                    }
+                }
+            },
+        ),
+        None,
+    )
+    by_quantity = {e["quantity"]: e for e in entries}
+    assert by_quantity["gain"]["achieved"] == 5.0
+    assert by_quantity["read noise"]["achieved"] == 10.0

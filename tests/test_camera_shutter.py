@@ -59,7 +59,22 @@ def test_flux_scale_covariance():
     """flux_rate_dn_per_s is signal-referenced and must scale exactly with
     the illumination flux; pct_error is a dimensionless ratio (inferred
     time / nominal time) and must NOT depend on the absolute flux used to
-    measure it -- only on the shape of the timing error across speeds."""
+    measure it -- only on the shape of the timing error across speeds.
+
+    Seed sweep note: the fastest speed's signal is only a handful of
+    electrons (this method's own known-limited regime), so shot noise's
+    *relative* contribution genuinely differs a little between the two
+    flux levels -- a real, physical effect, not a bug -- and that
+    difference is itself a random variable that occasionally exceeds a
+    too-tight tolerance. A 1000-seed sweep of this exact scenario put its
+    max observed swing at the fastest speed at ~2.18 percentage points
+    (p99.9 ~1.93); abs=3.0 below clears that with margin while staying two
+    orders of magnitude under the swing a real unit-mixing bug (e.g. using
+    raw signal_dn instead of the calibrated actual_s) would produce, which
+    is what this assertion actually guards against. Seed 1000 is a
+    concrete reproducer of the pre-fix failure at the old abs=1.0
+    tolerance (diff ~1.66 at the fastest speed); seed 0 is the original.
+    """
     black_dn, gain = 512.0, 2.0
     model = synth_sensor.SensorModel(
         shape=(96, 96), black_dn=black_dn, gain_e_per_dn=gain, read_noise_e=0.0,
@@ -68,23 +83,20 @@ def test_flux_scale_covariance():
     speeds = [1 / 4000, 1 / 1000, 1 / 250, 1 / 60, 1 / 15]
     lag_s = 1e-4
 
-    def run(flux):
-        rng = np.random.default_rng(0)
+    def run(flux, seed):
+        rng = np.random.default_rng(seed)
         frames = [_frame_at_speed(model, s, s + lag_s, flux, rng) for s in speeds]
         return shutter.analyze_shutter_accuracy(frames, black_dn)
 
-    a1 = run(20000.0)
-    a2 = run(80000.0)
-    assert a1.ok and a2.ok
-    assert a2.result["flux_rate_dn_per_s"] == pytest.approx(4 * a1.result["flux_rate_dn_per_s"], rel=1e-3)
-    # abs, not rel: the fastest speed's signal is only a handful of
-    # electrons (this method's own known-limited regime), so shot noise's
-    # *relative* contribution genuinely differs a little between the two
-    # flux levels -- a real, physical effect, not a bug. What must NOT
-    # happen is the sizeable (order-of-magnitude) swing a unit-mixing bug
-    # (e.g. using raw signal_dn instead of the calibrated actual_s) would
-    # produce.
-    assert np.array(a1.result["pct_error"]) == pytest.approx(np.array(a2.result["pct_error"]), abs=1.0)
+    for seed in (0, 1000):
+        a1 = run(20000.0, seed)
+        a2 = run(80000.0, seed)
+        assert a1.ok and a2.ok
+        assert a2.result["flux_rate_dn_per_s"] == pytest.approx(4 * a1.result["flux_rate_dn_per_s"], rel=1e-3)
+        # abs, not rel -- see docstring for why 3.0 and not the tighter 1.0
+        # this used to be. What must NOT happen is the sizeable
+        # (order-of-magnitude) swing a unit-mixing bug would produce.
+        assert np.array(a1.result["pct_error"]) == pytest.approx(np.array(a2.result["pct_error"]), abs=3.0), seed
 
 
 def test_refuses_with_too_few_speeds():

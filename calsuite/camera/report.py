@@ -123,6 +123,23 @@ def _darks_section(record) -> dict | None:
     return {"heading": "Dark current + hot pixels", "html": chart + bars}
 
 
+def _max_ratio_pct(numerators: list, denominators: list) -> float | None:
+    """``max(n / d) * 100`` over paired numerators/denominators, skipping
+    any pair whose denominator is zero -- a zero gain/read-noise value is a
+    legitimate (if degenerate) fit result, not a schema gap, and it
+    surfaces on a real fraction of noise realizations, not just hand-built
+    test data. Returns ``None`` -- rendered as
+    :data:`report.html.NOT_MEASURED` by ``error_budget_table`` -- when that
+    leaves no valid pair (every denominator zero/absent, or the inputs were
+    empty to begin with) instead of calling ``max()`` on an empty sequence
+    or dividing by zero.
+    """
+    ratios = [n / d for n, d in zip(numerators, denominators, strict=False) if d]
+    if not ratios:
+        return None
+    return max(ratios) * 100.0
+
+
 def _error_budget(ptc_record, linearity_record) -> list:
     """Every ``fit`` sub-dict is read with ``.get(...)``, never direct
     indexing, and only entries where *every* value involved is present are
@@ -130,6 +147,12 @@ def _error_budget(ptc_record, linearity_record) -> list:
     key (a hand-built/partial record, or a future schema change), and this
     must degrade to "no error-budget entry for that quantity" rather than
     a ``KeyError`` reaching straight into a chain of ``["fit"]["key"]``.
+
+    A quantity whose values/uncertainties *are* present but whose ratio
+    can't be formed (every denominator is zero, a degenerate-but-real fit
+    outcome) still gets an entry -- via :func:`_max_ratio_pct` returning
+    ``None`` -- so the report says "not measured" instead of either
+    crashing or silently dropping the row.
     """
     entries = []
     if ptc_record is not None:
@@ -138,20 +161,25 @@ def _error_budget(ptc_record, linearity_record) -> list:
         gains = [f["gain_uncertainty_e_per_dn"] for f in fits if f.get("gain_uncertainty_e_per_dn") is not None]
         gain_vals = [f["gain_e_per_dn"] for f in fits if f.get("gain_e_per_dn") is not None]
         if gains and gain_vals:
-            achieved_pct = max(g / v for g, v in zip(gains, gain_vals, strict=False)) * 100.0
+            achieved_pct = _max_ratio_pct(gains, gain_vals)
             entries.append(
-                {"quantity": "gain", "expected": ESTIMATED_ACCURACY["gain_pct"], "achieved": round(achieved_pct, 2), "unit": "%"}
+                {
+                    "quantity": "gain",
+                    "expected": ESTIMATED_ACCURACY["gain_pct"],
+                    "achieved": None if achieved_pct is None else round(achieved_pct, 2),
+                    "unit": "%",
+                }
             )
 
         read_noise_vals = [f["read_noise_e"] for f in fits if f.get("read_noise_e") is not None]
         read_noise_unc = [f["read_noise_uncertainty_e"] for f in fits if f.get("read_noise_uncertainty_e") is not None]
         if read_noise_vals and read_noise_unc:
-            achieved_pct = max(u / v for u, v in zip(read_noise_unc, read_noise_vals, strict=False) if v) * 100.0
+            achieved_pct = _max_ratio_pct(read_noise_unc, read_noise_vals)
             entries.append(
                 {
                     "quantity": "read noise",
                     "expected": ESTIMATED_ACCURACY["read_noise_pct"],
-                    "achieved": round(achieved_pct, 2),
+                    "achieved": None if achieved_pct is None else round(achieved_pct, 2),
                     "unit": "%",
                 }
             )
