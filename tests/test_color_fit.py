@@ -15,7 +15,13 @@ KNOWN_MATRIX = np.array(
     ]
 )
 CORNERS = [(60.0, 60.0), (660.0, 60.0), (660.0, 420.0), (60.0, 420.0)]
-ILLUMINANT_XY = (0.3127, 0.3290)  # D65
+# The reference chart (colour-science's ColorChecker24) states its own
+# values for D50, so that is the illuminant its patches must be
+# photographed under -- `color.fit` refuses a mismatch now, because the
+# chart's XYZ are its reflectances integrated against *its* illuminant and
+# no chromatic adaptation can re-integrate them for another one.
+ILLUMINANT_XY = (0.34570, 0.35854)  # D50 -- matches reference_colorchecker()
+ILLUMINANT_NAME = "D50"
 
 # Round-trip DeltaE00 threshold for these tests: comfortably tighter than
 # color_constants.VALIDATION_MEAN_DE00_MAX (a real-fit acceptance bar), since
@@ -39,7 +45,7 @@ def test_known_matrix_recovered_matrix_model():
     ref = chart.reference_colorchecker()
     sample = _render_and_sample(ref)
 
-    analysis = color.fit(sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name="D65", model="matrix")
+    analysis = color.fit(sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name=ILLUMINANT_NAME, model="matrix")
     assert analysis.ok
     assert analysis.result["validation_passed"]
     assert analysis.uncertainty["delta_e00_validation_mean"] < ROUND_TRIP_DE00_MAX
@@ -55,7 +61,7 @@ def test_white_preserving_holds_white_patch_close():
     white_name = ref.patches[white_idx].name
 
     analysis = color.fit(
-        sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name="D65", model="matrix", white_preserving=True
+        sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name=ILLUMINANT_NAME, model="matrix", white_preserving=True
     )
     assert analysis.ok
     rgb = color.black_subtracted_rgb(sample)
@@ -72,7 +78,7 @@ def test_root_polynomial_model_still_reports_plain_3x3():
     ref = chart.reference_colorchecker()
     sample = _render_and_sample(ref)
 
-    analysis = color.fit(sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name="D65", model="rp2")
+    analysis = color.fit(sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name=ILLUMINANT_NAME, model="rp2")
     assert analysis.ok
     M = np.array(analysis.result["matrix_raw_to_xyz"])
     assert M.shape == (3, 3)
@@ -106,7 +112,7 @@ def test_patch_permutation_invariance():
     held_out = [ref.patches[i].name for i in range(2, 24, 5)]  # a non-trivial, non-contiguous subset
 
     a1 = color.fit(
-        sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name="D65", model="matrix", white_preserving=True,
+        sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name=ILLUMINANT_NAME, model="matrix", white_preserving=True,
         held_out_names=held_out,
     )
     assert a1.ok
@@ -115,7 +121,7 @@ def test_patch_permutation_invariance():
     ref_perm = replace(ref, patches=[ref.patches[i] for i in perm])
     sample_perm = replace(sample, patches=[sample.patches[i] for i in perm])
     a2 = color.fit(
-        sample_perm, ref_perm, illuminant_xy=ILLUMINANT_XY, illuminant_name="D65", model="matrix",
+        sample_perm, ref_perm, illuminant_xy=ILLUMINANT_XY, illuminant_name=ILLUMINANT_NAME, model="matrix",
         white_preserving=True, held_out_names=held_out,
     )
     assert a2.ok
@@ -146,8 +152,8 @@ def test_signal_scale_invariance_of_validation_delta_e00():
     sample_a = _render_at_scale(ref, 8000.0)
     sample_b = _render_at_scale(ref, 32000.0)
 
-    a1 = color.fit(sample_a, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name="D65", model="matrix")
-    a2 = color.fit(sample_b, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name="D65", model="matrix")
+    a1 = color.fit(sample_a, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name=ILLUMINANT_NAME, model="matrix")
+    a2 = color.fit(sample_b, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name=ILLUMINANT_NAME, model="matrix")
     assert a1.ok and a2.ok
     assert a1.uncertainty["delta_e00_validation_mean"] == pytest.approx(
         a2.uncertainty["delta_e00_validation_mean"], abs=0.3
@@ -160,7 +166,7 @@ def test_held_out_patches_validated_not_fit():
     held_out = [ref.patches[i].name for i in range(0, 24, 6)]  # every 6th patch
 
     analysis = color.fit(
-        sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name="D65", model="matrix", held_out_names=held_out
+        sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name=ILLUMINANT_NAME, model="matrix", held_out_names=held_out
     )
     assert analysis.result["validation_method"] == "held_out"
     assert analysis.result["n_patches_held_out"] == len(held_out)
@@ -173,7 +179,7 @@ def test_glare_still_produces_a_best_effort_fit_but_refused():
     white_name = ref.patches[ref.brightest_neutral_index()].name
     sample = _render_and_sample(ref, glare_patch_names=[white_name], glare_extra_fraction=0.5)
 
-    analysis = color.fit(sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name="D65", model="matrix")
+    analysis = color.fit(sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name=ILLUMINANT_NAME, model="matrix")
     assert not analysis.ok
     assert any(r.check == "glare" for r in analysis.refusals)
     # A refusal is a finding, not an omission (house rule 3) -- the record
@@ -190,7 +196,7 @@ def test_record_provenance_reflects_validation(tmp_path):
     # actually gates on.
     ref = chart.reference_colorchecker()
     sample = _render_and_sample(ref)
-    analysis = color.fit(sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name="D65", model="matrix")
+    analysis = color.fit(sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name=ILLUMINANT_NAME, model="matrix")
     assert analysis.ok
     assert analysis.result["validation_passed"]
 
@@ -229,7 +235,7 @@ def test_failed_validation_refuses_even_with_no_other_quality_issue(monkeypatch)
 
     ref = chart.reference_colorchecker()
     sample = _render_and_sample(ref)
-    analysis = color.fit(sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name="D65", model="matrix")
+    analysis = color.fit(sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name=ILLUMINANT_NAME, model="matrix")
 
     assert not analysis.ok
     assert any(r.check == "validation_failed" for r in analysis.refusals)
@@ -246,3 +252,28 @@ def test_failed_validation_refuses_even_with_no_other_quality_issue(monkeypatch)
     assert record.status == "refused"
     with pytest.raises(store.ExportRefused):
         store.require_exportable(record)
+
+
+def test_fit_refuses_a_chart_photographed_under_a_different_illuminant_than_its_reference():
+    """`ReferenceChart.illuminant_xy` was set and then read nowhere: the fit
+    took `--illuminant` from the caller, used it as the Lab reference white
+    and stamped it on the record, while fitting to the chart's *own*
+    (D50-referenced) target XYZ. Those targets are the patches'
+    reflectances integrated against D50; under D65 the same reflectances
+    differ by ΔE00 2.1 mean / 5.7 max, and no chromatic adaptation
+    re-integrates a reflectance.
+    """
+    ref = chart.reference_colorchecker()
+    sample = _render_and_sample(ref)
+
+    analysis = color.fit(sample, ref, illuminant_xy=(0.3127, 0.3290), illuminant_name="D65", model="matrix")
+    assert not analysis.ok
+    mismatch = [r for r in analysis.refusals if r.check == "reference_illuminant_mismatch"]
+    assert mismatch, [r.check for r in analysis.refusals]
+    assert "D65" in mismatch[0].message
+    assert mismatch[0].value == pytest.approx(0.0443, abs=1e-3)
+
+    # The record says which illuminant the *reference* was for, so the two
+    # can never again disagree silently.
+    ok = color.fit(sample, ref, illuminant_xy=ILLUMINANT_XY, illuminant_name=ILLUMINANT_NAME, model="matrix")
+    assert ok.result["reference_illuminant_xy"] == pytest.approx(list(ref.illuminant_xy), abs=1e-9)

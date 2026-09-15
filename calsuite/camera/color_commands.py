@@ -228,7 +228,10 @@ def _matrices_for_record(record) -> tuple:
         raise SystemExit(f"record {record.id} has no white_patch_raw_rgb -- cannot build DCP matrices")
     color_matrix, forward_matrix = dcpmod.build_forward_and_color_matrices(matrix, np.array(raw_white))
     illuminant_name = record.result.get("illuminant", "D65")
-    code = dcpmod.ILLUMINANT_CODES.get(illuminant_name, dcpmod.ILLUMINANT_CODES["D65"])
+    try:
+        code = dcpmod.illuminant_code(illuminant_name)
+    except ValueError as exc:
+        raise SystemExit(f"record {record.id}: {exc}") from exc
     return color_matrix, forward_matrix, code
 
 
@@ -259,8 +262,13 @@ def _cmd_export(args) -> int:
         print(f"wrote {args.dcp}")
     if args.icc:
         matrix = np.array(record.result["matrix_raw_to_xyz"], dtype=np.float64)
-        illuminant_xy = tuple(record.result.get("illuminant_xy", (0.3127, 0.3290)))
-        colorant_matrix = dcpmod.icc_colorant_matrix(matrix, illuminant_xy)
+        raw_white = record.result.get("white_patch_raw_rgb")
+        if raw_white is None:
+            raise SystemExit(f"record {record.id} has no white_patch_raw_rgb -- cannot build an ICC colorant matrix")
+        # Device RGB for this profile is white-balanced raw in [0, 1]
+        # (raw / white_patch_raw_rgb), which is what puts the colorant
+        # columns in ICC's own units and makes (1, 1, 1) land on D50.
+        colorant_matrix = dcpmod.icc_colorant_matrix(matrix, np.array(raw_white))
         iccmod.write_profile(
             args.icc,
             device_class="scnr",

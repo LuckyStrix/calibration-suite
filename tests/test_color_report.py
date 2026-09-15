@@ -1,3 +1,6 @@
+import re
+
+import numpy as np
 from calsuite.camera import color_report
 from calsuite.store import Record
 
@@ -73,3 +76,48 @@ def test_render_matrix_with_a_none_cell_does_not_raise():
     html = color_report.render(record)
     assert html.startswith("<!doctype html>")
     assert "not measured" in html
+
+
+def test_predicted_swatches_come_from_measured_raw_not_an_identity():
+    """The predicted row used to be `M @ pinv(M) @ reference_XYZ`, which is
+    the identity for any invertible M -- the report drew "reference" and
+    "this fit's prediction" as two bit-identical rows however bad the fit
+    was. It now applies the matrix to each patch's *measured* raw RGB
+    (`patch_raw_rgb`), so a bad matrix looks bad.
+    """
+    from calsuite.camera import chart
+
+    reference = chart.reference_colorchecker()
+    names = [p.name for p in reference.patches]
+    # A deliberately wrong matrix (channels swapped), and raw RGB that would
+    # reproduce the chart exactly under the *right* one.
+    good = np.array([[0.6, 0.2, 0.1], [0.1, 0.7, 0.1], [0.1, 0.1, 0.6]])
+    bad = good[[1, 0, 2], :]
+    raw_rgb = [np.linalg.solve(good, np.asarray(p.XYZ, dtype=np.float64)).tolist() for p in reference.patches]
+
+    record = _record(
+        result={
+            "matrix_raw_to_xyz": bad.tolist(),
+            "model": "matrix",
+            "illuminant": "D50",
+            "illuminant_xy": [0.34570, 0.35854],
+            "reference_patch_names": names,
+            "patch_raw_rgb": raw_rgb,
+        }
+    )
+    html = color_report.render(record, reference=reference)
+    assert "Reference vs. predicted swatches" in html
+
+    strip = html.split("Reference vs. predicted swatches", 1)[1]
+    # Two rects per patch, then the caption's own text fill -- drop that.
+    hexes = re.findall(r"#[0-9a-f]{6}", strip)[: 2 * len(names)]
+    assert hexes, "no swatch colors rendered"
+    # The strip alternates reference, predicted, reference, ... per patch;
+    # with a wrong matrix the two rows must differ.
+    assert hexes[0::2] != hexes[1::2]
+
+    # ...and with the matrix the raw RGB actually came from, they match.
+    record_ok = _record(result={**record.result, "matrix_raw_to_xyz": good.tolist()})
+    strip_ok = color_report.render(record_ok, reference=reference).split("Reference vs. predicted swatches", 1)[1]
+    hexes_ok = re.findall(r"#[0-9a-f]{6}", strip_ok)[: 2 * len(names)]
+    assert hexes_ok[0::2] == hexes_ok[1::2]

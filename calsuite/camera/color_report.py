@@ -114,24 +114,31 @@ def render(record, reference=None) -> str:
             )
         sections.append({"heading": heading, "html": html})
 
-    if reference is not None and "matrix_raw_to_xyz" in result:
+    # The predicted row is the matrix applied to the *measured* raw RGB of
+    # each patch (`patch_raw_rgb`), so a bad fit looks bad. It used to be
+    # `M @ pinv(M) @ reference_XYZ`, which is the identity for any
+    # invertible M: the two rows were bit-identical -- verified with a
+    # matrix of condition number 7.9e7 -- so the section showed a perfect
+    # match no matter how bad the fit. A record written before
+    # `patch_raw_rgb` existed simply doesn't get the section.
+    patch_rgb = result.get("patch_raw_rgb")
+    patch_names = result.get("reference_patch_names")
+    if reference is not None and patch_rgb and patch_names and "matrix_raw_to_xyz" in result:
         illuminant_xy = tuple(result.get("illuminant_xy", (0.3127, 0.3290)))
         M = np.asarray(result["matrix_raw_to_xyz"], dtype=np.float64)
+        by_name = {p.name: p for p in reference.patches}
         names, ref_hex, pred_hex = [], [], []
-        # `reference` gives each patch's true XYZ; without the original
-        # sampled raw RGB (not stored on the record) the "predicted" row
-        # can only show what the matrix does to the *reference's own*
-        # XYZ run back through -- i.e. a self-consistency picture, not a
-        # fresh camera reading. That's still useful (a badly-conditioned
-        # matrix looks visibly wrong here even without new data).
-        inv_m = np.linalg.pinv(M)
-        for p in reference.patches:
-            names.append(p.name)
-            ref_hex.append(_xyz_to_hex(p.XYZ, illuminant_xy))
-            raw_back = inv_m @ np.asarray(p.XYZ, dtype=np.float64)
-            pred_xyz = M @ raw_back
-            pred_hex.append(_xyz_to_hex(pred_xyz, illuminant_xy))
-        sections.append({"heading": "Reference vs. predicted swatches", "html": _swatch_strip(names, ref_hex, pred_hex)})
+        for name, rgb in zip(patch_names, patch_rgb, strict=False):
+            patch = by_name.get(name)
+            if patch is None:
+                continue
+            names.append(name)
+            ref_hex.append(_xyz_to_hex(patch.XYZ, illuminant_xy))
+            pred_hex.append(_xyz_to_hex(M @ np.asarray(rgb, dtype=np.float64), illuminant_xy))
+        if names:
+            sections.append(
+                {"heading": "Reference vs. predicted swatches", "html": _swatch_strip(names, ref_hex, pred_hex)}
+            )
 
     if "smi" in result or "mean_delta_e_ab" in result:
         smi = report_html.optional_number(result.get("smi"), "{:.1f}")

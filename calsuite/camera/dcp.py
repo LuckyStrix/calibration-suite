@@ -88,7 +88,45 @@ TAG_PROFILE_COPYRIGHT = 0xC6FE
 
 # Standard Light A / D55 / D65 / D75 / D50, per the EXIF LightSource
 # enumeration DNG's CalibrationIlluminant tags reuse (module docstring).
-ILLUMINANT_CODES = {"A": 17, "D55": 20, "D65": 21, "D75": 22, "D50": 23}
+ILLUMINANT_CODES = {
+    # DNG's CalibrationIlluminant uses the EXIF LightSource enumeration.
+    # Only the illuminants that have a code are listed; `--illuminant`
+    # accepts all 64 of colour-science's CIE illuminant names, and
+    # `illuminant_code` refuses the ones that don't map rather than
+    # stamping a profile with the wrong illuminant.
+    "A": 17,
+    "B": 18,
+    "C": 19,
+    "D55": 20,
+    "D65": 21,
+    "D75": 22,
+    "D50": 23,
+    "FL1": 2,  # "Fluorescent" -- EXIF has no per-FLn codes below 12
+    "FL2": 14,  # cool white fluorescent
+    "FL3": 13,  # day white fluorescent
+    "FL4": 12,  # daylight fluorescent
+}
+
+def illuminant_code(illuminant_name: str) -> int:
+    """The DNG ``CalibrationIlluminant`` code for `illuminant_name`.
+
+    Raises rather than defaulting: the export used to fall back to D65 for
+    any name not in ``ILLUMINANT_CODES``, which is 59 of the 64 illuminant
+    names ``camera color fit --illuminant`` accepts. A chart shot under FL2
+    (cool white fluorescent), B, C, E or D60 produced a DCP stamped
+    "CalibrationIlluminant1 = 21 (D65)" with no warning -- and that tag is
+    what drives a renderer's dual-illuminant interpolation and temperature
+    estimate, so the silent substitution is a wrong answer, not a missing
+    one.
+    """
+    try:
+        return ILLUMINANT_CODES[illuminant_name]
+    except KeyError:
+        raise ValueError(
+            f"no DNG CalibrationIlluminant (EXIF LightSource) code for illuminant {illuminant_name!r}; "
+            f"known: {sorted(ILLUMINANT_CODES)}. Re-fit under one of those, or add its EXIF code here."
+        ) from None
+
 
 _SRATIONAL_DENOM = 1_000_000
 # A fixed denominator rather than Fraction.limit_denominator's variable one:
@@ -218,16 +256,27 @@ def build_forward_and_color_matrices(matrix_raw_to_xyz: np.ndarray, raw_white: n
     "white" patch is never a perfectly neutral, perfectly-illuminant-colored
     reflector, and this way the identity holds regardless.
 
-    **ColorMatrix** (D50 XYZ -> camera-native raw, the inverse direction,
-    used elsewhere in the DNG render pipeline to solve for white balance):
+    **ColorMatrix** (D50 XYZ -> camera-native raw, the inverse direction):
     this suite doesn't model DNG's separate CameraCalibration/AnalogBalance
     tags (left at their spec-default identity by omission), so ColorMatrix
-    is built as the direct inverse convention:
-    ``ColorMatrix = diag(1 / raw_white) @ inverse(M_d50)``, which satisfies
-    ``ColorMatrix @ D50_white == [1, 1, 1]`` -- the reference white maps to
-    a unit-neutral raw response, the spec's stated normalization goal for
-    ColorMatrix (a perfect reflector under the calibration illuminant maps
-    as closely as possible to neutral).
+    is the direct inverse, ``ColorMatrix = inverse(M_d50) / raw_white[1]``.
+    It must **not** have the white balance divided out of it: a renderer
+    uses ColorMatrix to derive CameraNeutral from AsShotWhiteXY (and to
+    invert a neutral back to an illuminant xy for dual-illuminant
+    interpolation), so ``ColorMatrix @ XYZ_white`` has to come back as the
+    camera's *native* neutral -- what the sensor actually reads off a
+    perfect reflector -- not as [1, 1, 1].
+
+    This used to be ``diag(1 / raw_white) @ inverse(M_d50)``, which makes
+    ``ColorMatrix @ D50_white == [1, 1, 1]`` by construction: the white
+    balance was already applied, so a renderer deriving its multipliers
+    from this profile got neutral multipliers and left the raw
+    un-white-balanced. Checked against LibRaw's own Adobe-derived matrix
+    for this project's reference body (`capt0000.cr3`, Canon R100):
+    ``rgb_xyz_matrix @ D50 = [0.557, 1.000, 0.534]``, i.e. the camera
+    neutral, with green normalized to 1 -- which is exactly what the
+    ``/ raw_white[1]`` scaling here reproduces (and it keeps the entries
+    O(1), inside ``_encode_srational``'s int32 numerator range).
     """
     import colour
 
@@ -242,7 +291,7 @@ def build_forward_and_color_matrices(matrix_raw_to_xyz: np.ndarray, raw_white: n
     M_d50 = cat @ M
 
     forward_matrix = M_d50 * raw_w[np.newaxis, :]  # M_d50 @ diag(raw_w)
-    color_matrix = np.linalg.inv(M_d50) / raw_w[:, np.newaxis]  # diag(1/raw_w) @ inverse(M_d50)
+    color_matrix = np.linalg.inv(M_d50) / raw_w[1]  # camera-native neutral, green normalized to 1
     return color_matrix, forward_matrix
 
 
@@ -380,21 +429,31 @@ def read_dcp(path: Path | str | bytes) -> DCPProfile:
 # ---------------------------------------------------------------------------
 
 
-def icc_colorant_matrix(matrix_raw_to_xyz: np.ndarray, illuminant_xy: tuple) -> np.ndarray:
-    """Bradford-adapt ``matrix_raw_to_xyz``'s columns (raw->XYZ under the
-    shooting illuminant) to D50 -- the PCS illuminant every ICC profile's
-    tags are defined against (``formats/icc.py``'s own docstring, ICC.1:2010
-    sec 7.2.16) -- so the result can be passed straight to
-    ``formats.icc.write_profile(..., matrix=...)``. Uses the *nominal*
-    illuminant chromaticity (not a fitted white, unlike
-    ``build_forward_and_color_matrices``) because an ICC matrix/TRC profile
-    has no per-white-patch escape hatch the way DCP's ForwardMatrix
-    construction does -- it simply declares the shooting illuminant's own
-    white point adapted to D50."""
-    import colour
+def icc_colorant_matrix(matrix_raw_to_xyz: np.ndarray, raw_white: np.ndarray) -> np.ndarray:
+    """The rXYZ/gXYZ/bXYZ colorant columns for an ICC input profile built
+    from this fit: D50-adapted, and in **device-RGB units** -- device RGB
+    being white-balanced raw in [0, 1] (raw / raw_white), so that
+    ``colorants @ [1, 1, 1] == D50`` exactly. That is the same matrix as
+    the DCP ForwardMatrix, and this returns it by delegating, so the ICC
+    and DCP exports describe one transform rather than two.
 
-    M = np.asarray(matrix_raw_to_xyz, dtype=np.float64)
-    xyz_w_shoot = np.array(colour.xy_to_XYZ(illuminant_xy), dtype=np.float64)
-    d50 = np.array(ICC_PCS_ILLUMINANT_D50, dtype=np.float64)
-    cat = colour.adaptation.matrix_chromatic_adaptation_VonKries(xyz_w_shoot, d50, transform="Bradford")
-    return cat @ M
+    The *units* are the whole point. This used to return ``cat @
+    matrix_raw_to_xyz``, whose input is raw DN, not device RGB, with two
+    consequences on a real fit (raw DN in the thousands, so matrix entries
+    around 6e-5):
+
+    - ``formats.icc.write_profile``'s default white point, the column sum,
+      came out as the XYZ of raw (1, 1, 1) DN -- about (9.7e-5, 1.0e-4,
+      6.8e-5) written into `wtpt` in place of D50 (0.9642, 1.0, 0.8249);
+    - every entry landed within a few counts of the s15Fixed16 step
+      (1/65536 = 1.5e-5), so the tags quantized to 1-5 counts. Round-tripped
+      through the writer and read back, that quantization alone cost ΔE00
+      9.2 mean / 17.6 max -- against a suite whose own acceptance bar is
+      ``VALIDATION_MEAN_DE00_MAX`` = 4.0.
+
+    A consumer of the profile must therefore apply the camera's white
+    balance (divide by ``raw_white``) before the profile's matrix, which is
+    the ordinary convention for a camera input profile.
+    """
+    _color_matrix, forward_matrix = build_forward_and_color_matrices(matrix_raw_to_xyz, raw_white)
+    return forward_matrix

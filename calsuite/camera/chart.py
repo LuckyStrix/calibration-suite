@@ -401,13 +401,35 @@ def refusals_for_fit(chart_sample: ChartSample, reference: ReferenceChart, model
     neutral_idx = reference.neutral_indices()
 
     # -- glare: within-patch spatial non-uniformity on neutral patches -----
+    # The CV is of the *black-subtracted* signal. On raw DN (as this used to
+    # be) the black pedestal dilutes the ratio by exactly signal/(signal +
+    # black), so the same physical hot spot reads ~8x weaker on the darkest
+    # neutral than on the brightest -- the check was most blind exactly
+    # where glare is proportionally worst. Neutrals below
+    # GLARE_MIN_SIGNAL_FRACTION of the brightest one are skipped instead,
+    # since their own shot noise is a several-percent CV.
+    black_by_channel = {
+        ch: chart_sample.black_level_by_channel.get(ch, float(np.mean(chart_sample.black_level))) for ch in CHANNELS
+    }
+
+    def _signal(patch, ch):
+        return patch.mean[ch] - black_by_channel[ch]
+
+    brightest = 0.0
+    for i in neutral_idx:
+        p = chart_sample.patches[i]
+        for ch in CHANNELS:
+            if p.n_px[ch]:
+                brightest = max(brightest, _signal(p, ch))
+    floor = cc.GLARE_MIN_SIGNAL_FRACTION * brightest
     worst_cv, worst_name = 0.0, None
     for i in neutral_idx:
         p = chart_sample.patches[i]
         for ch in CHANNELS:
-            if p.n_px[ch] == 0 or p.mean[ch] <= 0:
+            signal = _signal(p, ch)
+            if p.n_px[ch] == 0 or signal <= 0 or signal < floor:
                 continue
-            cv_ = p.std[ch] / p.mean[ch]
+            cv_ = p.std[ch] / signal
             if cv_ > worst_cv:
                 worst_cv, worst_name = cv_, p.name or f"({p.row},{p.col})"
     if worst_cv > cc.GLARE_NEUTRAL_CV_MAX:
@@ -442,7 +464,20 @@ def refusals_for_fit(chart_sample: ChartSample, reference: ReferenceChart, model
             cols_.append(p.col)
             ratios.append(g_mean / ref_y)
         if len(ratios) >= 3:
-            A = np.column_stack([rows_, cols_, np.ones(len(ratios))])
+            # Only the axes the neutral patches actually span are fitted. On
+            # a ColorChecker24 all six neutrals are patches 18-23: one row,
+            # six columns. The row column of the design matrix is then
+            # constant, perfectly collinear with the intercept, and a
+            # top-to-bottom gradient contributes nothing to the fitted
+            # spread -- a light placed above or below the chart (the common
+            # studio case) used to be undetectable here, silently, while the
+            # refusal's message implied a 2-D check. There is no fixing that
+            # with these patches -- one row of neutrals carries no vertical
+            # information at all -- so what the check can do is say which
+            # axes it actually tested.
+            axes = [(name, values) for name, values in (("rows", rows_), ("columns", cols_)) if len(set(values)) > 1]
+            tested = ", ".join(name for name, _ in axes) or "neither axis"
+            A = np.column_stack([np.asarray(values, dtype=np.float64) for _, values in axes] + [np.ones(len(ratios))])
             coeffs, *_ = np.linalg.lstsq(A, ratios, rcond=None)
             predicted = A @ coeffs
             mean_ratio = float(np.mean(ratios))
@@ -452,7 +487,8 @@ def refusals_for_fit(chart_sample: ChartSample, reference: ReferenceChart, model
                     Refusal(
                         "uneven_lighting",
                         f"neutral-patch response vs. reference varies {gradient:.3f} "
-                        "(peak-to-peak / mean) across the chart's fitted position trend",
+                        f"(peak-to-peak / mean) across the chart's fitted position trend, over {tested} "
+                        "(the only axis/axes this chart's neutral patches span)",
                         value=gradient,
                         threshold=cc.UNEVEN_LIGHTING_GRADIENT_MAX,
                     )

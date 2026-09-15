@@ -34,15 +34,49 @@ PATCH_CENTRAL_FRACTION = 0.5
 # refusals (docs/design.md sec 3.2)
 # ---------------------------------------------------------------------------
 
-GLARE_NEUTRAL_CV_MAX = 0.02
+REFERENCE_ILLUMINANT_XY_MAX_DELTA = 0.005
+# How far the chart's own reference illuminant may sit from the illuminant
+# the chart was photographed under, as a Euclidean distance in CIE 1931 xy,
+# before the fit refuses. A reference chart's XYZ are the product of its
+# patches' *reflectance* and its stated illuminant's spectrum; change the
+# illuminant and those numbers change in a way no chromatic adaptation can
+# undo (a CAT moves a white point, it does not re-integrate a reflectance).
+# Measured on colour-science's own ColorChecker24 data: its D50 values
+# versus the same reflectances under D65 differ by ΔE00 2.1 mean / 5.7 max
+# (worst on the blues) even after each is placed in its own Lab space --
+# half the suite's entire mean-ΔE00 acceptance budget, spent before the
+# camera is involved. 0.005 in xy is roughly the disagreement between two
+# published chromaticities of the *same* illuminant, i.e. small enough to
+# tolerate bookkeeping differences and nothing else. D50 vs D65 is 0.044.
+
+GLARE_MIN_SIGNAL_FRACTION = 0.25
+# The glare check only looks at neutrals whose *black-subtracted* signal is
+# at least this fraction of the brightest neutral's. Below that, photon
+# shot noise alone is a several-percent CV (a patch at 5% of full scale on
+# a gain-2 e-/DN sensor sits at a few hundred electrons, i.e. CV a few
+# percent), so a single flat CV ceiling can't separate glare from noise
+# down there -- and the dark neutrals are the ones where a real glare hot
+# spot is proportionally largest, so the honest move is to say the check
+# doesn't cover them rather than to loosen the ceiling for everyone.
+
+GLARE_NEUTRAL_CV_MAX = 0.04
 # Within a single neutral patch's sampled region, the coefficient of
-# variation (std/mean) of a clean, evenly-lit, diffuse patch is dominated by
-# photon shot noise and read noise -- at the DN levels a correctly-exposed
-# gray patch sits at (typically many hundreds to a few thousand DN above
-# black), shot noise alone gives a CV well under 1%. A glare hot spot (a
-# specular reflection off the chart's surface coating, or a reflected light
-# source) adds spatial structure on top of that, so 2% is a conservative
-# ceiling that only trips on real non-uniformity, not sensor noise.
+# variation (std/mean) of a clean, evenly-lit, diffuse patch is set by
+# photon shot noise plus PRNU: measured on this suite's own synthetic
+# chart, a well-exposed neutral above GLARE_MIN_SIGNAL_FRACTION sits at
+# 1.2-2.2% (the PRNU floor is ~1.1%, and it does not average away with
+# exposure -- only the shot-noise part does). A glare hot spot (a specular
+# reflection off the chart's coating, or a reflected light source) adds
+# spatial structure on top of that: a +50% hot spot over a quarter of the
+# patch measures 6-8%. 4% sits between the two.
+#
+# This is a CV of the *black-subtracted* signal. Computed on raw DN, as it
+# was, the black pedestal (2048 of 16383 on the R100) dilutes it by
+# signal/(signal + black), so the same 7.7% non-uniformity measured 1.3%
+# on a dark neutral and passed a 2% ceiling, while on a bright one it
+# measured 6.1% and refused -- an 8x swing in sensitivity across the
+# neutral ramp, always understating, and blindest exactly where a hot spot
+# is proportionally largest.
 
 UNEVEN_LIGHTING_GRADIENT_MAX = 0.08
 # "Uneven lighting" is checked by regressing each neutral patch's raw

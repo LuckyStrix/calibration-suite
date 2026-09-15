@@ -23,10 +23,18 @@ def test_build_forward_and_color_matrices_dng_normalization():
     predicted_white = forward_matrix @ np.array([1.0, 1.0, 1.0])
     assert predicted_white == pytest.approx(ICC_PCS_ILLUMINANT_D50, abs=1e-9)
 
-    # ColorMatrix's own stated normalization: the D50 white maps back to a
-    # unit-neutral raw response.
+    # ColorMatrix maps D50 to the camera's *native* neutral -- what the
+    # sensor actually reads off a perfect reflector, green normalized to 1
+    # -- NOT to [1, 1, 1]. A renderer derives CameraNeutral (its white
+    # balance multipliers) from this tag, so a ColorMatrix with the white
+    # balance already divided out tells it no multipliers are needed and
+    # leaves the raw un-white-balanced. Cross-checked against LibRaw's own
+    # Adobe-derived matrix for this project's reference body: for the Canon
+    # R100, rgb_xyz_matrix @ D50 = [0.557, 1.000, 0.534].
     neutral = color_matrix @ np.array(ICC_PCS_ILLUMINANT_D50)
-    assert neutral == pytest.approx([1.0, 1.0, 1.0], abs=1e-9)
+    assert neutral == pytest.approx(RAW_WHITE / RAW_WHITE[1], rel=1e-9)
+    assert neutral[1] == pytest.approx(1.0, abs=1e-9)
+    assert neutral == pytest.approx(color_matrix @ (forward_matrix @ np.ones(3)), rel=1e-9)
 
 
 def test_dcp_round_trip_single_illuminant(tmp_path):
@@ -96,8 +104,7 @@ def test_icc_colorant_matrix_matches_pillow_prediction(tmp_path):
     ImageCms = pytest.importorskip("PIL.ImageCms")
     from PIL import Image
 
-    illuminant_xy = (0.3127, 0.3290)  # D65
-    colorant_matrix = dcp.icc_colorant_matrix(MATRIX, illuminant_xy)
+    colorant_matrix = dcp.icc_colorant_matrix(MATRIX, RAW_WHITE)
 
     path = tmp_path / "camera.icc"
     iccmod.write_profile(
@@ -168,3 +175,51 @@ def test_export_refuses_weak_provenance():
     assert not prov.is_exportable(record.provenance)
     with pytest.raises(store.ExportRefused):
         store.require_exportable(record)
+
+
+def test_icc_colorant_matrix_is_in_device_rgb_units_and_survives_s15fixed16(tmp_path):
+    """The colorant columns have to be in ICC's own device-RGB units
+    (white-balanced raw in [0, 1]), not raw DN.
+
+    This used to return `cat @ matrix_raw_to_xyz` directly. On a real fit
+    -- raw DN in the thousands, so matrix entries around 6e-5 -- that made
+    `write_profile`'s default white point (the column sum) the XYZ of raw
+    (1, 1, 1) DN instead of D50, and put every entry within a few counts of
+    the s15Fixed16 step (1/65536 = 1.5e-5), quantizing the tags to 1-5
+    counts. `MATRIX` above hides both: its columns already sum to ~1, so
+    the implied white lands near D50 by accident. This uses a
+    raw-DN-scale matrix, where the old behaviour is unmissable.
+    """
+    raw_white = np.array([3200.0, 4500.0, 2800.0])
+    matrix_raw_dn = MATRIX / raw_white[1]  # raw DN -> XYZ: entries ~1e-4
+
+    colorants = dcp.icc_colorant_matrix(matrix_raw_dn, raw_white)
+
+    # Device RGB (1, 1, 1) is the white patch, and it lands exactly on D50,
+    # so write_profile's `wtpt` is the PCS white it is required to be.
+    assert colorants @ np.ones(3) == pytest.approx(ICC_PCS_ILLUMINANT_D50, abs=1e-9)
+    # Entries are O(0.1-1), i.e. thousands of s15Fixed16 steps, not a few.
+    assert np.abs(colorants).max() < 2.0
+    assert np.abs(colorants).min() > 100.0 / 65536.0
+
+    path = tmp_path / "camera.icc"
+    iccmod.write_profile(path, device_class="scnr", description="scale check", matrix=colorants, trc=1.0)
+    read_back = np.array(iccmod.read_profile(path).matrix)
+    # Round-tripping through the file changes no entry by more than one
+    # s15Fixed16 step, i.e. by more than 0.01% of the matrix's own scale.
+    assert read_back == pytest.approx(colorants, abs=1.0 / 65536.0)
+    assert np.abs(read_back - colorants).max() / np.abs(colorants).max() < 1e-4
+
+
+def test_illuminant_code_refuses_an_illuminant_it_has_no_code_for():
+    """`--illuminant` accepts all 64 of colour-science's CIE illuminant
+    names; DNG's CalibrationIlluminant (the EXIF LightSource enumeration)
+    has codes for a handful. The export used to `.get(name, D65)`, so a
+    chart shot under FL2, E or D60 produced a DCP stamped "D65" with no
+    warning -- and that tag is what drives a renderer's dual-illuminant
+    interpolation and temperature estimate.
+    """
+    assert dcp.illuminant_code("D50") == 23
+    assert dcp.illuminant_code("FL2") == 14
+    with pytest.raises(ValueError, match="no DNG CalibrationIlluminant"):
+        dcp.illuminant_code("D60")

@@ -224,6 +224,28 @@ def fit(
     for r in quality_refusals:
         analysis.refusals.append(r)
 
+    # The target XYZ below are the reference chart's own, which are its
+    # patches' reflectances integrated against *its* stated illuminant. Fit
+    # a photograph taken under a different illuminant to them and the
+    # targets are simply wrong -- and no chromatic adaptation fixes it,
+    # because a CAT moves a white point rather than re-integrating a
+    # reflectance. This went unchecked: `ReferenceChart.illuminant_xy` was
+    # set (D50, for colour-science's ColorChecker24) and then read nowhere,
+    # while the record was stamped with whatever `--illuminant` said.
+    ref_xy = np.asarray(reference.illuminant_xy, dtype=np.float64)
+    delta_xy = float(np.hypot(*(np.asarray(illuminant_xy, dtype=np.float64) - ref_xy)))
+    if delta_xy > cc.REFERENCE_ILLUMINANT_XY_MAX_DELTA:
+        analysis.refuse(
+            "reference_illuminant_mismatch",
+            f"the chart was photographed under {illuminant_name or 'xy=%.4f,%.4f' % tuple(illuminant_xy)} "
+            f"(xy={illuminant_xy[0]:.4f},{illuminant_xy[1]:.4f}) but {reference.name!r}'s reference values are "
+            f"for xy={ref_xy[0]:.4f},{ref_xy[1]:.4f} -- fitting to them would fit the wrong targets. Shoot under "
+            "the chart's own reference illuminant, or supply a reference measured under yours "
+            "(chart.reference_from_csv(..., illuminant_xy=...)).",
+            value=round(delta_xy, 5),
+            threshold=cc.REFERENCE_ILLUMINANT_XY_MAX_DELTA,
+        )
+
     valid = _valid_indices(chart_sample)
     if len(valid) < 4:  # not even enough to attempt a 3x3 -- nothing more to compute
         analysis.refuse(
@@ -324,9 +346,19 @@ def fit(
         "model": model,
         "illuminant": illuminant_name or f"xy={illuminant_xy[0]:.4f},{illuminant_xy[1]:.4f}",
         "illuminant_xy": [float(illuminant_xy[0]), float(illuminant_xy[1])],
+        "reference_illuminant_xy": [float(ref_xy[0]), float(ref_xy[1])],
         "white_preserving": bool(white_preserving),
         "reference_chart": reference.name,
         "reference_patch_names": [reference.patches[i].name for i in valid],
+        # Every sampled patch's own black-subtracted raw RGB, in
+        # `reference_patch_names` order. Carried so a reader (and
+        # `camera/color_report.py`'s swatch strip) can put the matrix back
+        # against the measurements it was fit to: without it the report
+        # could only run the *reference's* XYZ back through pinv(M) and
+        # then M, which is the identity for any invertible matrix -- it
+        # drew "reference" and "predicted" as two identical rows however
+        # bad the fit was.
+        "patch_raw_rgb": [[float(v) for v in row] for row in rgb_all],
         "matrix_raw_to_xyz": matrix_3x3.tolist(),
         "white_patch_raw_rgb": white_patch_raw_rgb,
         "n_patches_fit": len(fit_idx),
