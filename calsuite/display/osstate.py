@@ -83,6 +83,15 @@ def check_x11_icc_profile() -> tuple:
     except tools.ToolError as exc:
         return None, f"xprop failed: {exc}"
     text = result.stdout.strip()
+    if result.returncode != 0:
+        # An xprop that couldn't reach the X server (no DISPLAY, an auth
+        # failure, a Wayland session) writes nothing to stdout and exits
+        # non-zero. Reading only stdout made that indistinguishable from
+        # "the atom is unset" and reported it as verified-clean -- the same
+        # unknown-treated-as-good inversion ``refuse_if_hdr_on``'s `None`
+        # branch exists to avoid.
+        stderr = (result.stderr or "").strip()
+        return None, f"xprop exited {result.returncode} ({stderr or 'no output'}) -- could not determine whether an ICC/VCGT loader is active"
     if not text or "not found" in text.lower():
         return None, None  # atom unset -- nothing is loading a profile
     return text, f"_ICC_PROFILE root window atom is set ({text}) -- a profile/VCGT loader may be active"
@@ -234,6 +243,42 @@ def gather(*, confirm_hdr_off: bool = False, osd: dict | None = None) -> OSState
         hdr_method=hdr_method,
         osd=osd or {},
     )
+
+
+def refuse_if_gamma_not_reset(state: OSState) -> Refusal | None:
+    """Design §5.3's first pre-flight: the video card's gamma LUT has to be
+    linear before a single patch is read, or every measurement is taken
+    through whatever calibration curve was left loaded. ``gather`` has
+    always recorded whether that succeeded; nothing read it, so a run on a
+    box with no ``dispwin`` measured through a stale VCGT and still came
+    back ``provenance="measured", status="ok"``.
+    """
+    if not state.gamma_reset:
+        return Refusal(
+            "gamma_table_not_reset",
+            f"the video card's gamma table was not reset to linear ({state.gamma_reset_method}); "
+            "measurements would be taken through whatever curve is currently loaded",
+            False,
+            True,
+        )
+    return None
+
+
+def refuse_if_profile_loader_active(state: OSState) -> Refusal | None:
+    """Design §5.3's second pre-flight: on Linux/X11, nothing else may be
+    loading a VCGT/profile while the panel is measured. Refuses both when a
+    loader is detected *and* when the check could not be run at all --
+    unknown is not clean (same rule as ``refuse_if_hdr_on``'s `None`
+    branch).
+    """
+    if state.profile_loader_warning is not None:
+        return Refusal(
+            "profile_loader_active",
+            state.profile_loader_warning,
+            state.icc_profile_atom,
+            None,
+        )
+    return None
 
 
 def refuse_if_hdr_on(state: OSState) -> Refusal | None:

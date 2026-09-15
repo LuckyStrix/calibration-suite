@@ -200,8 +200,9 @@ def test_frame_to_raw_rgb_uses_per_channel_black_not_a_flat_mean():
     cfa[0::2, 1::2] = 250  # G1
     cfa[1::2, 0::2] = 250  # G2
     cfa[1::2, 1::2] = 600  # B
-    # Distinct per-position black levels (raster order at the absolute
-    # origin: R, G1, G2, B, since visible starts at (0, 0) -- both even).
+    # Distinct per-channel black levels, in LibRaw's own cblack[0..3] order
+    # -- by *color index* (R, first-G, B, second-G), not by raster position;
+    # visible starts at (0, 0), so the visible tile is the absolute tile.
     frame = RawFrame(
         cfa=cfa,
         pattern="RGGB",
@@ -213,7 +214,7 @@ def test_frame_to_raw_rgb_uses_per_channel_black_not_a_flat_mean():
         sha256="",
     )
     black = black_level_by_channel(frame)
-    assert black == {"R": 100.0, "G1": 120.0, "G2": 90.0, "B": 400.0}
+    assert black == {"R": 100.0, "G1": 120.0, "B": 90.0, "G2": 400.0}
 
     r, g, b = cameramod.frame_to_raw_rgb(frame)
     assert r == pytest.approx((300 - black["R"]) / 2.0)

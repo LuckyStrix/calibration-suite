@@ -159,21 +159,28 @@ def _black_level_map(pattern: str, top: int, left: int, total_rows: int, total_c
 
 
 def _black_level_tuple(pattern: str, top: int, left: int, channel_black: dict) -> tuple:
-    """`RawFrame.black_level`'s 4 values, in the absolute-(0,0)-origin
-    raster order real raw files use (``raw.black_level_by_channel``'s
-    docstring) -- the mirror image of that function: given a value per
-    canonical channel name, produce the positional tuple a real loader
-    would have produced. The row/col-shift step is its own inverse (adding
-    the same 0/1 shift twice mod 2 is the identity), so reusing it here
-    exactly undoes what ``black_level_by_channel`` does to read it back."""
+    """`RawFrame.black_level`'s 4 values in LibRaw's own ``cblack[0..3]``
+    order -- indexed by **color index** (R, first-G, B, second-G of
+    ``color_desc``), not by raster position; see
+    ``raw.black_level_by_channel``'s docstring for the derivation against
+    the reference camera's actual ``raw_pattern``. Given a value per
+    canonical channel name, this produces the tuple a real loader would
+    have produced, so a synthetic frame exercises the same mapping a real
+    one does.
+
+    This deliberately re-derives the order rather than reusing
+    ``black_level_by_channel``'s own table: written as a literal mirror of
+    that function (as it was), the round-trip test can only prove the
+    mapping is a bijection -- it would pass just as happily with both sides
+    wrong the same way, which is exactly how the old B/G2 swap survived.
+    """
     positions = _plane_positions(pattern)
     row_shift, col_shift = top % 2, left % 2
-    absolute_positions = ((0, 0), (0, 1), (1, 0), (1, 1))  # raster order -- black_level's own order
-    values = []
-    for r, c in absolute_positions:
-        visible_pos = ((r + row_shift) % 2, (c + col_shift) % 2)
-        values.append(channel_black[positions[visible_pos]])
-    return tuple(values)
+    names_at_absolute = [
+        positions[((r + row_shift) % 2, (c + col_shift) % 2)] for r, c in ((0, 0), (0, 1), (1, 0), (1, 1))
+    ]
+    greens = [name for name in names_at_absolute if name.startswith("G")]
+    return tuple(channel_black[name] for name in ("R", greens[0], "B", greens[1]))
 
 
 def _fixed_pattern_maps(model: SensorModel):

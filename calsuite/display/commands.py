@@ -212,6 +212,20 @@ def _all_measurement_patches(steps: int) -> list:
     return flat, grid, flat_grid
 
 
+def _reads_live_screen(args) -> bool:
+    """Whether this run measures what is on the screen *right now* -- the
+    only case in which the OS-state pre-flight (linear video-card LUT, no
+    other VCGT loader) describes the conditions the numbers were taken
+    under. ``synthetic`` stands in for the whole display; ``spectro`` and
+    ``camera --from DIR`` read files captured in an earlier session.
+    """
+    if args.backend in ("synthetic", "spectro"):
+        return False
+    if args.backend == "camera":
+        return bool(getattr(args, "capture", False))
+    return True
+
+
 def _measure_via_backend(args, patches: list, *, store: storemod.Store):
     """Get one ``Measurement`` per patch (same order as ``patches``) from
     whichever backend ``args.backend`` names, plus that backend's
@@ -350,9 +364,21 @@ def _cmd_measure(args) -> int:
     device = _resolve_device(args.device_id)
 
     state = osstate.gather(confirm_hdr_off=args.confirm_hdr_off, osd={"brightness": args.osd_brightness, "mode": args.osd_mode})
-    hdr_refusal = osstate.refuse_if_hdr_on(state)
-    if hdr_refusal is not None:
-        analysis = Analysis(refusals=[hdr_refusal])
+    preflight = [r for r in (osstate.refuse_if_hdr_on(state),) if r is not None]
+    if _reads_live_screen(args):
+        # Design §5.3's other two pre-flights only mean anything for a
+        # backend that reads the screen *now*: a linear video-card LUT and
+        # "nothing else is loading a VCGT" are statements about the machine
+        # at measurement time. `synthetic` never touches a real screen, and
+        # `camera --from`/`spectro` read frames captured in an earlier
+        # session whose OS state this process can no longer speak for.
+        preflight += [
+            r
+            for r in (osstate.refuse_if_gamma_not_reset(state), osstate.refuse_if_profile_loader_active(state))
+            if r is not None
+        ]
+    if preflight:
+        analysis = Analysis(refusals=preflight)
         record = storemod.Record.from_analysis(
             kind="display.measurement",
             device=device,
@@ -362,7 +388,7 @@ def _cmd_measure(args) -> int:
             conditions={"osstate": state.to_dict()},
         )
         path = store.save(record)
-        print(f"refused (HDR): wrote {path}")
+        print(f"refused ({', '.join(r.check for r in preflight)}): wrote {path}")
         return 1
 
     ramp_patches, grid_patches, flat_grid_patches = _all_measurement_patches(args.steps)
@@ -408,7 +434,20 @@ def _cmd_measure(args) -> int:
             "black_contrast": black_contrast_analysis.result,
             "uniformity": uniformity_analysis.result,
             "primaries_measured": {k: list(v) for k, v in primaries_measured.items()},
-            "samples": {"rgb": [list(p.rgb) for p in all_patches], "xyz": [list(m.xyz) for m in measurements]},
+            # `samples` is the profile builder's training set (_cmd_profile
+            # hands it straight to profile.write_ti3 -> colprof), so it holds
+            # the full-screen centered colorimetric patches *only*. The
+            # uniformity grid is 25 more patches that are all device RGB
+            # (1,1,1) but measured off-center at UNIFORMITY_PATCH_SIZE_FRAC:
+            # feeding them in gave colprof 26 contradictory readings for
+            # white (a 25% luminance spread on a panel with real
+            # non-uniformity), pulling the white/shaper normalization toward
+            # the screen corners. Their measurements are already reported,
+            # in the form that makes sense for them, under "uniformity".
+            "samples": {
+                "rgb": [list(p.rgb) for p in ramp_patches],
+                "xyz": [list(m.xyz) for m in measurements[: len(ramp_patches)]],
+            },
             "backend_accuracy": accuracy.to_dict(),
         },
         refusals=list(trc_analysis.refusals) + list(black_contrast_analysis.refusals) + list(uniformity_analysis.refusals),
@@ -557,6 +596,26 @@ def _cmd_validate(args) -> int:
         print(f"refused: {cause}")
         return 1
     measurement = store.latest("display.measurement", device["id"])
+    if measurement is None or measurement.status != "ok" or "w" not in measurement.result.get("primaries_measured", {}):
+        # Every ΔE00 below is computed against this display's own measured
+        # white. Falling back to "the first validation patch" (which is
+        # cc24-dark skin, L*~37 and strongly chromatic) rather than saying
+        # so turns the whole record into garbage that reads as a
+        # measurement -- name the cause and refuse instead (house rule 3).
+        cause = (
+            f"no display.measurement record exists for device {device['id']!r}"
+            if measurement is None
+            else f"the latest display.measurement record ({measurement.id}) is refused or has no measured white"
+        )
+        analysis = Analysis(refusals=[Refusal("no_measured_white", f"can't validate: {cause}")])
+        record = storemod.Record.from_analysis(
+            kind="display.validation", device=device, analysis=analysis, provenance="measured",
+            method={"name": _METHOD_NAME, "calsuite_version": __version__, "params": {"backend": args.backend}},
+            derived_from=[profile_record.id],
+        )
+        store.save(record)
+        print(f"refused: {cause}")
+        return 1
 
     lab_patches = patchesmod.validation_set()
     lab_targets = [p.lab_target for p in lab_patches]
@@ -567,7 +626,7 @@ def _cmd_validate(args) -> int:
     measurements, accuracy = _measure_via_backend(args, patches_to_show, store=store)
     measured_xyz = [m.xyz for m in measurements]
 
-    white_xyz = measurement.result["primaries_measured"]["w"] if measurement is not None else measured_xyz[0]
+    white_xyz = measurement.result["primaries_measured"]["w"]
     analysis = validatemod.validate(measured_xyz, lab_targets, white_xyz, accuracy.de00_estimate)
 
     record = storemod.Record.from_analysis(

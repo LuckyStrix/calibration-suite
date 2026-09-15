@@ -200,3 +200,65 @@ def test_pwm_banding_reports_none_without_pwm():
 def test_pwm_banding_refuses_too_few_rows():
     result = analysis.pwm_banding([1.0] * 4)
     assert not result.ok
+
+
+def test_pwm_banding_detects_a_noise_free_square_wave():
+    """A clean square-wave banding signal -- the most extreme PWM a panel
+    can produce -- puts exact zeros in most FFT bins, so the median of the
+    non-peak bins is exactly 0.0. The detector used to require `floor > 0`,
+    which read "infinitely prominent peak" as "nothing there" and called
+    this flicker-free. The suite's own round-trip test only escaped that by
+    floating-point luck (its floor lands at ~1e-14 rather than 0).
+    """
+    rows = [100.0 if (i // 4) % 2 == 0 else 50.0 for i in range(64)]  # period 8 rows
+    result = analysis.pwm_banding(rows, row_period_s=0.0002)
+    assert result.result["detected"] is True
+    assert result.result["cycles_per_row"] == pytest.approx(0.125, abs=1e-6)
+    assert result.result["frequency_hz"] == pytest.approx(625.0, rel=1e-6)
+    # Unbounded ratio: reported as None rather than a made-up finite number.
+    assert result.result["prominence"] is None
+
+
+def test_uniformity_refuses_a_wrong_rank_grid_instead_of_crashing():
+    """A 2-D (luminance-only) grid used to pass the `shape[:2] == (n, n)`
+    half of the shape check and then raise IndexError on `shape[2]` -- the
+    `uniformity_grid_shape` refusal could never fire for the likeliest
+    wrong-shaped input."""
+    result = analysis.uniformity([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
+    assert not result.ok
+    assert result.refusals[0].check == "uniformity_grid_shape"
+
+
+def test_uniformity_refuses_an_even_sized_grid():
+    """`patches.uniformity_grid` spans the screen edge-to-edge, so only an
+    odd n has a cell at the screen center. For an even n, grid[n//2][n//2]
+    is an off-center cell silently reported as "the center" every other
+    cell is compared against."""
+    result = analysis.uniformity(np.ones((4, 4, 3)))
+    assert not result.ok
+    assert result.refusals[0].check == "uniformity_grid_even_n"
+
+
+def test_trc_fit_drops_a_sub_black_step_instead_of_refusing_the_channel():
+    """Near-black instrument noise is ordinary: on a 1000:1 panel the first
+    blue ramp step sits ~0.04 cd/m^2 above black, so a reading a hundredth
+    of a cd/m^2 below the measured black is well within a colorimeter's
+    repeatability. That step used to be *clipped* to 1e-6 and kept in the
+    log-log fit, where log(1e-6) = -13.8 against a fit whose whole log
+    range is ~6 wrecked r^2 and refused the channel as `poor_fit` -- naming
+    the wrong cause for one unusable reading. It is now dropped, counted,
+    and the rest of the ramp still fits.
+    """
+    model = DisplayModel(gamma={"r": 2.2, "g": 2.2, "b": 2.2}, black_luminance_cdm2=0.25)
+    black_y = float(model.measure((0, 0, 0))[1])
+    ramps = {ch: _ramp_data(model, ch) for ch in ("r", "g", "b")}
+    # One near-black blue step reads 0.01 cd/m^2 *below* the measured black.
+    ramps["b"]["xyz"][1] = [0.0, black_y - 0.01, 0.0]
+
+    result = analysis.trc_fit(ramps, black_y=black_y)
+    assert result.ok, [r.check for r in result.refusals]
+    assert result.result["effective_gamma"]["b"] == pytest.approx(2.2, abs=0.1)
+    assert result.result["steps_at_or_below_black"]["b"] == 1
+    assert result.result["steps_at_or_below_black"]["r"] == 0
+    # The LUT keeps every step, floored at 0 -- never a negative entry.
+    assert min(result.result["lut"]["b"]) >= 0.0

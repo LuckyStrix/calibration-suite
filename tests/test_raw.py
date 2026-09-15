@@ -168,8 +168,35 @@ def test_black_level_by_channel_handles_odd_margin_phase_shift():
         sha256=frame.sha256,
     )
     by_channel = raw.black_level_by_channel(frame)
-    assert set(by_channel) == {"R", "G1", "G2", "B"}
-    assert set(by_channel.values()) == {500.0, 510.0, 520.0, 530.0}
+    # Exact values, not `set(...) == {...}`: the old assertion passed for
+    # *any* permutation of the four, which is how a B/G2 swap lived here
+    # undetected. top_margin=7 makes the absolute-origin tile "GBRG", so
+    # LibRaw's cblack order (R, first-G, B, second-G) at that origin is
+    # (R, G2, B, G1) in this frame's visible-origin names.
+    assert by_channel == {"R": 500.0, "G2": 510.0, "B": 520.0, "G1": 530.0}
+
+
+def test_black_level_by_channel_uses_librraw_color_index_order_not_raster_order():
+    """``black_level`` is LibRaw's ``cblack[0..3]``: one value per *color
+    index* of ``color_desc`` (b"RGBG"), i.e. R, first-G, B, second-G --
+    not the four raster positions of the tile. Confirmed against this
+    project's reference camera: for capt0000.cr3 (Canon R100) rawpy reports
+    ``raw_pattern = [[0, 1], [3, 2]]``, so index 2 (B) is at raster
+    position (1, 1) and index 3 (the second green) at (1, 0). Mapping by
+    raster position swaps B and G2 on every standard Bayer sensor -- the
+    exact case this function exists to get right.
+    """
+    frame = raw.RawFrame(
+        cfa=np.zeros((8, 8), dtype=np.uint16),
+        pattern="RGGB",  # even margins: the visible tile is the absolute tile
+        visible=(slice(0, 8), slice(0, 8)),
+        black_level=(100.0, 200.0, 300.0, 400.0),
+        white_level=16383.0,
+        meta=raw.FrameMeta(),
+        path="synthetic",
+        sha256="",
+    )
+    assert raw.black_level_by_channel(frame) == {"R": 100.0, "G1": 200.0, "B": 300.0, "G2": 400.0}
 
 
 def test_save_npz_and_load_npz_round_trip(tmp_path):

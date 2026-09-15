@@ -171,31 +171,44 @@ def black_level_by_channel(frame: RawFrame) -> dict:
     so ``camera/bias.py`` and ``camera/chart.py`` (and anything else that
     needs a per-channel black) can do it correctly.
 
-    ``black_level``'s 4 entries are positional in *raster order of the 2x2
-    tile at the sensor's own absolute (row=0, col=0) origin* -- the same
-    origin rawpy's ``raw_pattern``/``black_level_per_channel`` are defined
-    against (confirmed against LibRaw's documented ``cblack[0..3]``
-    convention: one value per color-filter index, in the order that index
-    is first encountered scanning that origin tile in raster order, which
-    for a standard 2x2 Bayer CFA is exactly "R, first-G, B, second-G").
+    ``black_level``'s 4 entries are **indexed by LibRaw color index, not by
+    raster position**: ``cblack[0..3]`` is one value per color-filter index
+    of ``color_desc`` (``b"RGBG"`` for a Bayer sensor), i.e. the order
+    "R, first-G, B, second-G". Verified directly against this project's own
+    reference camera: for ``capt0000.cr3`` (Canon R100) rawpy reports
+    ``color_desc = b"RGBG"`` and ``raw_pattern = [[0, 1], [3, 2]]``, so the
+    *second* green is index 3 and sits at raster position (1, 0) while B is
+    index 2 at (1, 1). Zipping the four values onto raster positions
+    ``(0,0), (0,1), (1,0), (1,1)`` -- which this function used to do,
+    against its own docstring -- therefore swaps **B and G2** on every
+    standard Bayer sensor. That is silently wrong in exactly the case the
+    function exists for: a sensor whose green chains read a different black
+    level from blue.
+
     ``frame.pattern``, by contrast, is named relative to the *visible*
     origin (``frame.visible``), which is a different tile whenever either
     margin (``frame.visible[0].start`` / ``frame.visible[1].start``) is
     odd -- the visible tile is then the absolute tile's phase shifted by
-    one row and/or column. This function undoes exactly that shift before
-    naming each value, so it's correct in general, not just on sensors
-    (the R100 included: 56/288, both even) where the two origins happen to
-    coincide.
+    one row and/or column. Only the two greens are affected by that shift
+    (R is R and B is B wherever they sit), and this function undoes it
+    before naming them, so it's correct in general, not just on sensors
+    (the R100 included: both its margins are even) where the two origins
+    happen to coincide.
     """
     row_shift = frame.visible[0].start % 2
     col_shift = frame.visible[1].start % 2
     visible_names = _plane_positions(frame.pattern)
-    absolute_positions = ((0, 0), (0, 1), (1, 0), (1, 1))  # raster order -- black_level's own order
-    out = {}
-    for value, (r, c) in zip(frame.black_level, absolute_positions, strict=True):
-        visible_pos = ((r + row_shift) % 2, (c + col_shift) % 2)
-        out[visible_names[visible_pos]] = value
-    return out
+    # The visible-origin plane name at each position of the *absolute*
+    # origin's tile, in that tile's raster order -- so "first G"/"second G"
+    # below are the greens as LibRaw's color indices 1 and 3 number them.
+    names_at_absolute = [
+        visible_names[((r + row_shift) % 2, (c + col_shift) % 2)] for r, c in ((0, 0), (0, 1), (1, 0), (1, 1))
+    ]
+    greens = [name for name in names_at_absolute if name.startswith("G")]
+    if len(greens) != 2 or "R" not in names_at_absolute or "B" not in names_at_absolute:
+        raise ValueError(f"expected an RGGB-family 2x2 CFA, got pattern {frame.pattern!r}")
+    color_index_order = ("R", greens[0], "B", greens[1])  # LibRaw cblack[0..3]
+    return dict(zip(color_index_order, frame.black_level, strict=True))
 
 
 def optical_black(frame: RawFrame) -> dict:

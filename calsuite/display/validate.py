@@ -57,10 +57,11 @@ def validate(measured_xyz: list, lab_targets: list, white_xyz, accuracy_de00_est
     """`measured_xyz`: XYZ measurements of the validation patches as
     actually displayed through the profile, in the same order as
     `lab_targets` (the target each patch was supposed to reproduce).
-    `white_xyz`: the display's own measured white -- the reference
-    ``display.analysis.xyz_to_lab`` uses for the Lab comparison, since
-    every Lab in this session is relative to what this panel actually
-    shows as white, not a canonical illuminant. `accuracy_de00_estimate`:
+    `white_xyz`: the display's own measured white -- the media-relative
+    reference each measurement is normalized to before being Bradford-
+    adapted to the ICC PCS's D50 Lab (``display.analysis.xyz_to_lab_pcs``),
+    which is the space `lab_targets` (D50-referenced CC24 Lab) live in and
+    the one the profile itself was built in. `accuracy_de00_estimate`:
     the measuring backend's own ``accuracy().de00_estimate`` -- pass
     thresholds scale from this (house rule 7; the multipliers themselves,
     with their reasons, are ``constants.VALIDATION_*_DE00_MULTIPLIER``).
@@ -76,7 +77,7 @@ def validate(measured_xyz: list, lab_targets: list, white_xyz, accuracy_de00_est
         return analysis
 
     de00s = [
-        analysismod.delta_e00(lab_target, analysismod.xyz_to_lab(xyz, white_xyz))
+        analysismod.delta_e00(lab_target, analysismod.xyz_to_lab_pcs(xyz, white_xyz))
         for xyz, lab_target in zip(measured_xyz, lab_targets, strict=True)
     ]
     de00s = np.asarray(de00s, dtype=np.float64)

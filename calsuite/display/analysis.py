@@ -37,6 +37,36 @@ def xyz_to_lab(xyz, white_xyz) -> np.ndarray:
     return colour.XYZ_to_Lab(xyz_n, illuminant=white_xy)
 
 
+def xyz_to_lab_pcs(xyz, white_xyz) -> np.ndarray:
+    """Media-relative XYZ -> **D50-referenced** Lab, Bradford-adapted from
+    `white_xyz`'s chromaticity to the ICC PCS illuminant.
+
+    This is the space an ICC profile actually works in, and it is *not*
+    what ``xyz_to_lab`` computes: that one normalizes by the display's own
+    white in XYZ (Lab's built-in wrong-von-Kries scaling), while
+    ``display.profile.build_fallback_matrix_trc`` -- and lcms, when the
+    profile is used -- adapt with Bradford. Comparing a measurement made
+    through a profile against a D50-referenced target (the CC24 Lab values
+    in ``display.patches``) has to use the profile's own convention, or
+    the disagreement between the two adaptations is charged to the
+    profile: on a noise-free synthetic display and a mathematically exact
+    profile of it, that bookkeeping error alone is ~1.2 ΔE00 mean / 4.5
+    ΔE00 p95, concentrated in the blues, which is enough to refuse a
+    correct profile.
+    """
+    import colour
+
+    from calsuite.formats.icc import ICC_PCS_ILLUMINANT_D50
+
+    white_xyz = np.asarray(white_xyz, dtype=np.float64)
+    white_n = white_xyz / white_xyz[1]
+    xyz_n = np.asarray(xyz, dtype=np.float64) / white_xyz[1]
+    d50 = np.asarray(ICC_PCS_ILLUMINANT_D50, dtype=np.float64)
+    adapt = colour.adaptation.matrix_chromatic_adaptation_VonKries(white_n, d50, transform="Bradford")
+    xyz_d50 = np.einsum("ij,...j->...i", adapt, xyz_n)
+    return colour.XYZ_to_Lab(xyz_d50, illuminant=colour.XYZ_to_xy(d50))
+
+
 def delta_e00(lab1, lab2) -> float:
     import colour
 
@@ -71,7 +101,7 @@ def trc_fit(channel_ramps: dict, black_y: float = 0.0) -> Analysis:
     level) is returned alongside it for a LUT-based profile build.
     """
     analysis = Analysis()
-    gammas, luts, r2s = {}, {}, {}
+    gammas, luts, r2s, dropped_steps = {}, {}, {}, {}
     for ch, data in channel_ramps.items():
         levels = np.asarray(data["levels"], dtype=np.float64)
         y = np.asarray(data["xyz"], dtype=np.float64)[:, 1] - black_y
@@ -84,12 +114,23 @@ def trc_fit(channel_ramps: dict, black_y: float = 0.0) -> Analysis:
                 0.0,
             )
             continue
-        y_norm = np.clip(y / y_max, 1e-6, None)
-        mask = (levels > 0.0) & (levels < 1.0)
+        y_norm = y / y_max
+        # A step whose black-corrected luminance is <= 0 is *dropped* from
+        # the fit, not clipped into it. Clipping it to 1e-6 (as this used
+        # to) puts log(y_norm) = -13.8 into a fit whose entire log range is
+        # ~6, so one near-black step reading a hundredth of a cd/m^2 below
+        # the measured black -- ordinary colorimeter repeatability on a
+        # 1000:1 panel, where the first blue ramp step sits ~0.04 cd/m^2
+        # above black -- wrecks r^2 and refuses the channel as
+        # `poor_fit`, naming the wrong cause for one unusable reading.
+        usable = y_norm > 0.0
+        mask = (levels > 0.0) & (levels < 1.0) & usable
+        dropped = int(((levels > 0.0) & (levels < 1.0) & ~usable).sum())
         if int(mask.sum()) < 3:
             analysis.refuse(
                 f"trc_{ch}_too_few_points",
-                f"fewer than 3 usable interior points for channel {ch}'s gamma fit",
+                f"fewer than 3 usable interior points for channel {ch}'s gamma fit "
+                f"({dropped} interior step(s) measured at or below the display's black level)",
                 int(mask.sum()),
                 3,
             )
@@ -113,11 +154,19 @@ def trc_fit(channel_ramps: dict, black_y: float = 0.0) -> Analysis:
             continue
         gammas[ch] = float(slope)
         r2s[ch] = r2
-        luts[ch] = [float(v) for v in y_norm]
+        # The LUT keeps every measured step (a profile build wants the full
+        # ramp), floored at 0 so a sub-black reading can't hand a negative
+        # entry to a profile builder.
+        luts[ch] = [float(v) for v in np.clip(y_norm, 0.0, None)]
+        dropped_steps[ch] = dropped
     analysis.result["effective_gamma"] = gammas
     analysis.result["lut"] = luts
     analysis.result["levels"] = {ch: [float(v) for v in channel_ramps[ch]["levels"]] for ch in channel_ramps}
     analysis.residuals["gamma_fit_r2"] = r2s
+    # How many interior steps fell at/below black and were left out of each
+    # channel's fit -- a reader can tell a clean ramp from one that only fit
+    # because its near-black steps were dropped.
+    analysis.result["steps_at_or_below_black"] = dropped_steps
     return analysis
 
 
@@ -237,12 +286,29 @@ def uniformity(grid_xyz) -> Analysis:
     """
     analysis = Analysis()
     grid = np.asarray(grid_xyz, dtype=np.float64)
-    n = grid.shape[0]
-    if grid.shape[:2] != (n, n) or grid.shape[2] != 3:
+    # ndim is checked *first*: with `n = grid.shape[0]` taken up front, a
+    # 2-D (luminance-only) grid passes the `shape[:2] == (n, n)` half and
+    # then raises IndexError on `shape[2]` -- the refusal this check exists
+    # to report would never fire for the likeliest wrong-shaped input.
+    if grid.ndim != 3 or grid.shape[0] != grid.shape[1] or grid.shape[2] != 3:
         analysis.refuse(
             "uniformity_grid_shape",
             f"expected a square (n, n, 3) grid, got {grid.shape}",
             list(grid.shape),
+            None,
+        )
+        return analysis
+    n = grid.shape[0]
+    if n % 2 == 0:
+        # `patches.uniformity_grid` spans the screen edge-to-edge, so only
+        # an odd n has a cell at the screen's center; for an even n,
+        # grid[n // 2, n // 2] is an off-center cell being reported as
+        # "the center" every other cell is compared against.
+        analysis.refuse(
+            "uniformity_grid_even_n",
+            f"a {n}x{n} grid has no center cell -- uniformity is measured against the screen center, "
+            "which only exists for an odd grid size",
+            n,
             None,
         )
         return analysis
@@ -339,6 +405,11 @@ def pwm_banding(row_means, *, row_period_s: float | None = None) -> Analysis:
     rows' exposure -- the sensor's row readout time) is given, since
     cycles/row alone carries no time base (design's explicit "Hz only if
     readout time is given").
+
+    `prominence` is the peak bin's magnitude over the median of the other
+    non-DC bins, and is reported as ``None`` when that median is exactly
+    zero (a noise-free signal, where the ratio is unbounded) -- `detected`
+    is still True in that case.
     """
     analysis = Analysis()
     y = np.asarray(row_means, dtype=np.float64)
@@ -352,9 +423,17 @@ def pwm_banding(row_means, *, row_period_s: float | None = None) -> Analysis:
     spectrum[0] = 0.0  # drop DC
     peak_idx = int(np.argmax(spectrum))
     peak_mag = float(spectrum[peak_idx])
-    rest = np.delete(spectrum, peak_idx)
+    # The noise floor is the median of the other bins with *both* the peak
+    # and the (zeroed) DC bin removed -- leaving the zeroed DC bin in `rest`
+    # biases the floor low, i.e. toward false detections.
+    rest = np.delete(spectrum, [0, peak_idx] if peak_idx != 0 else [0])
     floor = float(np.median(rest)) if len(rest) else 0.0
-    detected = floor > 0 and peak_mag >= dc.PWM_FFT_MIN_PROMINENCE * floor
+    # A zero floor means the peak is *infinitely* prominent, not that there
+    # is nothing there: a clean square-wave banding signal puts exact zeros
+    # in most bins, so the median of the rest is exactly 0.0 and a `floor >
+    # 0` guard would call the most extreme banding a panel can produce
+    # flicker-free.
+    detected = peak_mag > 0.0 and (floor <= 0.0 or peak_mag >= dc.PWM_FFT_MIN_PROMINENCE * floor)
     analysis.result["detected"] = bool(detected)
     analysis.result["cycles_per_row"] = float(freqs[peak_idx]) if detected else None
     analysis.result["prominence"] = (peak_mag / floor) if floor > 0 else None
