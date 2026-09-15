@@ -54,9 +54,21 @@ def _black_dn(frames) -> dict:
     return rawmod.black_level_by_channel(frames[0]) if frames[0].black_level else 0.0
 
 
-def _latest_ok(st: store.Store, kind: str, device_id: str):
-    record = st.latest(kind, device_id)
-    return record if record is not None and record.status == "ok" else None
+def _latest_ok(st: store.Store, kind: str, device_id: str, *, iso=None):
+    """The most recent record of ``kind`` for this device whose status is
+    ``ok`` -- not "the most recent record, if it happens to be ok", which is
+    what this was: one refused re-run then hid every passing record behind
+    it, so a later analysis lost the gain/black level it had measured
+    perfectly well the day before. ``iso``, when given, restricts to records
+    taken at that ISO and returns None rather than falling back to another
+    ISO's, since gain is ISO-dependent and a gain from the wrong ISO is a
+    silently wrong electron count."""
+    records = [r for r in st.all(kind=kind, device_id=device_id) if r.status == "ok"]
+    if iso is not None:
+        records = [r for r in records if r.conditions.get("iso") == iso]
+    if not records:
+        return None
+    return max(records, key=lambda r: (r.created, r.id))
 
 
 def _black_dn_from_store(st: store.Store, device_id: str, frames) -> float | dict:
@@ -66,8 +78,8 @@ def _black_dn_from_store(st: store.Store, device_id: str, frames) -> float | dic
     return _black_dn(frames)
 
 
-def _gain_from_store(st: store.Store, device_id: str):
-    ptc_record = _latest_ok(st, "camera.ptc", device_id)
+def _gain_from_store(st: store.Store, device_id: str, *, iso=None):
+    ptc_record = _latest_ok(st, "camera.ptc", device_id, iso=iso)
     if ptc_record is None:
         return None
     channels = ptc_record.result.get("channels", {})
@@ -146,6 +158,21 @@ def _maybe_capture(args, target_dir: Path) -> None:
         print(f"  [{i + 1}/{count}] {path}")
 
 
+def _near_black_note(manifest) -> str:
+    """The "...and here is probably why" half of a "no bias/dark frames
+    found" message: frames that *are* near black but carry no exposure
+    time, which is what `raw._read_metadata` produces when neither exiftool
+    nor dcraw is installed. Without this the message sends a reader looking
+    for a capture problem that isn't there."""
+    n = len(manifest.by_role("near_black"))
+    if not n:
+        return ""
+    return (
+        f" ({n} near-black frame(s) there carry no exposure time, so they can't be told apart as bias or dark "
+        "-- install exiftool or dcraw so the raw metadata can be read)"
+    )
+
+
 def _resolve_from_dir(args) -> Path:
     if getattr(args, "capture", False):
         target = Path(args.from_dir) if args.from_dir else config.captures_dir() / args.subcommand_name
@@ -166,7 +193,7 @@ def _cmd_bias(args) -> int:
     manifest = manual.scan_folder(folder)
     entries = manifest.by_role("bias")
     if not entries:
-        print(f"no bias frames found in {folder}")
+        print(f"no bias frames found in {folder}{_near_black_note(manifest)}")
         return 1
 
     by_iso: dict = {}
@@ -179,7 +206,10 @@ def _cmd_bias(args) -> int:
         frames = _load_frames(iso_entries)
         device_ref = devicesmod.camera_ref(frames[0].meta)
         analysis = bias.analyze_bias(frames)
-        gain = _gain_from_store(st, device_ref.id)
+        # This ISO's own gain: read noise in electrons is read_noise_dn *
+        # gain, and gain changes with ISO -- which is the entire point of
+        # the invariance curve `camera iso` builds out of these numbers.
+        gain = _gain_from_store(st, device_ref.id, iso=iso_value)
         if analysis.ok and gain is not None:
             bias.add_read_noise_electrons(analysis, gain)
         conditions = {"iso": iso_value, "settings": settings.summarize(frames)}
@@ -272,7 +302,7 @@ def _cmd_darks(args) -> int:
     manifest = manual.scan_folder(folder)
     entries = manifest.by_role("dark")
     if not entries:
-        print(f"no dark frames found in {folder}")
+        print(f"no dark frames found in {folder}{_near_black_note(manifest)}")
         return 1
 
     frames = _load_frames(entries)

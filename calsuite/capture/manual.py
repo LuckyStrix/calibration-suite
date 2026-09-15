@@ -4,9 +4,14 @@ time -- no tethering required. "Manual import is first-class" (docs/
 design.md §3.3): every measurement must work from a folder of raws shot on
 either OS, tethering is only ever a convenience layered on top.
 
-**Classification rule** (bias / dark / flat / target): first, a mean
-signal (above black) below ``NEAR_BLACK_DN`` splits off bias/dark by
-exposure time (``BIAS_MAX_EXPOSURE_S``). Above that, a frame in the flat's
+**Classification rule** (bias / dark / near_black / flat / target): first,
+a mean signal (above black) below ``NEAR_BLACK_DN`` splits off bias/dark by
+exposure time (``BIAS_MAX_EXPOSURE_S``) -- or, with no exposure time on the
+frame at all (``raw._read_metadata`` returns an empty ``FrameMeta`` when
+neither exiftool nor dcraw is installed, a supported configuration), by
+declining to split at all: the role is ``near_black``, since a bias and a
+dark are the same picture without an exposure time to tell them apart.
+Above that, a frame in the flat's
 DN band (``FLAT_LOW_FRACTION``..``FLAT_HIGH_FRACTION`` of the DN range) is
 still only called "flat" if it also looks spatially uniform
 (``FLAT_MAX_CV``, a coefficient-of-variation cap) -- a slanted-edge or
@@ -117,7 +122,7 @@ def _cheap_cv(frame) -> float:
 
 
 def classify(frame, expected_role: str | None = None) -> str:
-    """bias / dark / flat / target, from a cheap mean signal, the frame's
+    """bias / dark / near_black / flat / target, from a cheap mean signal, the frame's
     exposure time, and (to tell a flat from a same-signal-band target) its
     spatial uniformity -- see the module docstring's "classification
     rule". ``expected_role``, when given, is returned unconditionally
@@ -133,7 +138,17 @@ def classify(frame, expected_role: str | None = None) -> str:
 
     if signal < NEAR_BLACK_DN:
         exposure = frame.meta.exposure_s
-        if exposure is not None and exposure <= BIAS_MAX_EXPOSURE_S:
+        if exposure is None:
+            # Bias and dark are the *same* picture without an exposure time
+            # to tell them apart, and `raw._read_metadata` returns an empty
+            # FrameMeta when neither exiftool nor dcraw is installed (a
+            # supported configuration: "pixels still loaded, metadata just
+            # empty"). Calling it "dark" then made `camera bias --from DIR`
+            # report "no bias frames found" on a folder of perfectly good
+            # bias frames, and counted those same frames as darks. Say
+            # undecided instead, and let the command name the cause.
+            return "near_black"
+        if exposure <= BIAS_MAX_EXPOSURE_S:
             return "bias"
         return "dark"
 
@@ -153,7 +168,9 @@ def classify(frame, expected_role: str | None = None) -> str:
     return "target"
 
 
-_RAW_EXTENSIONS = {".cr3", ".CR3", ".dng", ".DNG", ".nef", ".NEF"} | rawmod.NPZ_EXTENSIONS
+_RAW_EXTENSIONS = {".cr3", ".CR3", ".dng", ".DNG", ".nef", ".NEF"} | rawmod.NPZ_EXTENSIONS | {
+    ext.upper() for ext in rawmod.NPZ_EXTENSIONS
+}
 # ``.npz`` (raw.save_npz's format) alongside the real raw extensions --
 # a synthetic RawFrame written that way is otherwise indistinguishable
 # from a real capture to everything downstream of this scan (demo.py's

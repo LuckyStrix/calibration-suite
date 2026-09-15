@@ -254,7 +254,9 @@ def load(path: Path | str) -> RawFrame:
     instead -- the two formats are interchangeable everywhere a ``RawFrame``
     is accepted."""
     path = Path(path)
-    if path.suffix in NPZ_EXTENSIONS:
+    # Case-insensitive, like the real raw extensions elsewhere: a
+    # `frame.NPZ` handed to rawpy dies with LibRawFileUnsupportedError.
+    if path.suffix.lower() in NPZ_EXTENSIONS:
         return load_npz(path)
 
     import rawpy  # imported lazily so devices.py/store.py etc. stay importable without it

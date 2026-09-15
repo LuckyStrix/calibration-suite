@@ -232,14 +232,20 @@ def parse_edid(data: bytes) -> EDIDInfo:
     # (1mm resolution, up to 4095mm) over the coarse max-image-size bytes
     # 21-22 (1cm resolution) -- the design doc's 344x215mm figure for this
     # laptop panel only comes out exact from the finer field.
-    physical_size_mm = (float(b[21]) * 10.0, float(b[22]) * 10.0)
+    coarse_size_mm = (float(b[21]) * 10.0, float(b[22]) * 10.0)
+    physical_size_mm = coarse_size_mm
     name = ""
     serial_string = ""
     for offset in (54, 72, 90, 108):
         desc = b[offset : offset + 18]
         detailed = _parse_detailed_timing_image_size(desc)
         if detailed is not None:
-            if detailed != (0.0, 0.0):
+            # First (= preferred) detailed timing wins. This used to
+            # overwrite on every descriptor, so the *last* timing's size was
+            # reported -- harmless while they agree, wrong when they don't,
+            # and EDID's own rule is that descriptor 1 is the preferred
+            # timing.
+            if detailed != (0.0, 0.0) and physical_size_mm == coarse_size_mm:
                 physical_size_mm = detailed
             continue
         text = _parse_monitor_descriptor_text(desc)

@@ -116,6 +116,10 @@ class Record:
     @classmethod
     def from_dict(cls, d: dict) -> Record:
         schema = d.get("schema")
+        if schema is not None and not isinstance(schema, int):
+            # A record with "schema": "2" or 2.0 used to slip past the guard
+            # below entirely and load as if it were schema 1.
+            raise RecordCorruptError(f"record schema must be an integer, got {schema!r}")
         if isinstance(schema, int) and schema > SCHEMA_VERSION:
             raise UnsupportedSchemaError(
                 f"record schema {schema} is newer than this calsuite understands (schema {SCHEMA_VERSION}) "
@@ -255,8 +259,42 @@ class Store:
             np.savez_compressed(path, **arrays)
             record.artifacts.append({"name": name, "sha256": sha256_file(path)})
 
+        # Serialized before anything is committed, and with `allow_nan=False`.
+        # Two reasons:
+        #
+        # - json.dumps raising here (an ndarray or np.float64 left in
+        #   `result`, the case fit.Refusal's docstring warns about) used to
+        #   happen *after* the sidecars were on disk, leaving a .npz with no
+        #   .json at all -- an artifact no `Store.all` can ever find.
+        # - Python's json writes bare `NaN`/`Infinity` by default, which is
+        #   not valid JSON. `records/` is committed to a public repo and
+        #   advertised as the suite's output, and `devices.parse_edid`
+        #   deliberately yields a NaN gamma for an EDID that defers gamma to
+        #   an extension block, so `calsuite devices` really did write
+        #   `"gamma": NaN` into a committed file that jq and every strict
+        #   parser reject. Python's own json.loads accepts it, which is why
+        #   nothing here noticed. Fail loudly instead; a non-finite number is
+        #   a missing measurement and belongs in the record as null.
+        try:
+            payload = json.dumps(record.to_dict(), indent=2, allow_nan=False)
+        except ValueError as exc:
+            raise ValueError(
+                f"record {record.id} contains a non-finite number (NaN/Infinity), which is not valid JSON: "
+                f"{exc} -- write null for a value that wasn't measured"
+            ) from exc
+
         path = self._record_path(record)
-        path.write_text(json.dumps(record.to_dict(), indent=2), encoding="utf-8")
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(path)
+
+        # Sidecars from a previous save of this same record id that the
+        # current artifact set doesn't cover: leaving them on disk leaves
+        # files nothing references and nothing verifies.
+        keep = {self._artifact_path(record, a["name"]) for a in record.artifacts}
+        for stale in device_dir.glob(f"{record.id}.*.npz"):
+            if stale not in keep:
+                stale.unlink()
         return path
 
     # -- reading -----------------------------------------------------------
@@ -325,11 +363,33 @@ class Store:
         records = list(self.all(kind=kind, device_id=device_id))
         if not records:
             return None
-        return max(records, key=lambda r: r.created)
+        # `created` has one-second resolution, so two records of the same
+        # kind saved in the same second tie. Breaking the tie on `id` keeps
+        # the answer *reproducible* (it used to fall out of the glob order,
+        # i.e. out of new_id's random hex suffix, so the same store could
+        # answer differently on different machines); it can't make it
+        # meaningful, because a one-second stamp genuinely doesn't say which
+        # came first. A caller that needs "the latest *passing* one" must
+        # filter on status rather than rely on this -- see
+        # doctor.check_unsuperseded_refusals, which compares timestamps with
+        # >= for exactly this reason.
+        return max(records, key=lambda r: (r.created, r.id))
 
     def is_stale(self, record: Record, *, now: datetime | None = None) -> bool:
         """True if ``record`` is older than its kind's shelf life."""
         now = now or datetime.now(timezone.utc)
-        created = datetime.strptime(record.created, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        if now.tzinfo is None:
+            # A naive `now` used to raise TypeError ("can't subtract
+            # offset-naive and offset-aware datetimes") from inside a
+            # staleness check. Every timestamp in a record is UTC by
+            # construction; read a naive one the same way.
+            now = now.replace(tzinfo=timezone.utc)
+        try:
+            created = datetime.strptime(record.created, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        except ValueError as exc:
+            raise RecordCorruptError(
+                f"record {record.id}: created timestamp {record.created!r} is not the stored "
+                "%Y%m%dT%H%M%SZ format"
+            ) from exc
         max_age = SHELF_LIFE_DAYS.get(record.kind, DEFAULT_SHELF_LIFE_DAYS)
         return (now - created).days > max_age

@@ -64,12 +64,26 @@ def _method(name: str, params: dict) -> dict:
     return {"name": name, "calsuite_version": __version__, "params": params}
 
 
-def _run_cli(argv: list, warnings: list) -> int:
+def _run_cli(argv: list, warnings: list, *, expect_refusal: bool = False) -> int:
+    """Run one real CLI command, warning on anything but success.
+
+    Every command returns 1 when its analysis refuses, and this used to
+    accept `rc in (0, 1)` silently -- so a regression that made `camera
+    ptc` refuse at every ISO, or `display validate` fail, produced a demo
+    whose index page said "No warnings" and whose process exit code was 0.
+    `expect_refusal=True` is for the one place that *wants* a refusal (the
+    deliberately narrow lens pose set), and says so at the call site.
+    """
     from calsuite.cli import main as cli_main  # lazy: cli.py imports this module for `calsuite demo`
 
     rc = cli_main(argv)
+    printable = f"`calsuite {' '.join(argv)}`"
     if rc not in (0, 1):
-        warnings.append(f"`calsuite {' '.join(argv)}` exited {rc} (expected 0 or 1)")
+        warnings.append(f"{printable} exited {rc} (expected 0 or 1)")
+    elif rc == 1 and not expect_refusal:
+        warnings.append(f"{printable} refused (exit 1) -- see its record's refusals")
+    elif rc == 0 and expect_refusal:
+        warnings.append(f"{printable} was expected to refuse and did not")
     return rc
 
 
@@ -84,18 +98,6 @@ def _run_sensor(out_dir: Path, warnings: list) -> Path | None:
     frames_root = out_dir / "_capture" / "sensor"
     black_dn, gain, read_noise_e, full_well_e = 512.0, 2.0, 3.0, 40000.0
     shape = (96, 96)
-
-    bias_model = synth_sensor.SensorModel(
-        shape=shape, black_dn=black_dn, gain_e_per_dn=gain, read_noise_e=read_noise_e,
-        prnu_std=0.0, dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0,
-    )
-    rng = np.random.default_rng(0)
-    bias_frames = [
-        _with_meta(synth_sensor.frame(bias_model, exposure_s=1e-4, flux_e_per_s=0.0, temp_c=20.0, rng=rng), iso=100)
-        for _ in range(8)
-    ]
-    bias_dir = _save_npz_series(bias_frames, frames_root / "bias")
-    _run_cli(["camera", "bias", "--from", str(bias_dir)], warnings)
 
     # 24 levels (docs/design.md §3.1's own "20-30 signal levels" guidance)
     # on a larger frame than the other sensor legs use (128x128, not 96x96):
@@ -129,6 +131,31 @@ def _run_sensor(out_dir: Path, warnings: list) -> Path | None:
             frames.append(_with_meta(b, iso=iso_value))
         ptc_dir = _save_npz_series(frames, frames_root / f"ptc_iso{iso_value}")
         _run_cli(["camera", "ptc", "--from", str(ptc_dir)], warnings)
+
+    # Bias runs *after* PTC and once per ISO, because that is what the
+    # invariance curve is actually made of: `camera bias` measures read
+    # noise directly (std(A-B)/sqrt(2)) and converts it to electrons with
+    # that ISO's own gain, which it can only do once a camera.ptc record
+    # exists for that ISO. `camera iso` then builds the curve out of those
+    # measurements rather than out of PTC's fit intercept. The modelled
+    # input-referred read noise falls from ISO 100 to 400 and then flattens
+    # -- the classic invariance signature, so the demo has a real elbow at
+    # 400 to recommend.
+    for iso_value, iso_read_noise_e in ((100, 4.5), (400, 3.2), (1600, 3.0)):
+        bias_model = synth_sensor.SensorModel(
+            shape=shape, black_dn=black_dn, gain_e_per_dn=gain, read_noise_e=iso_read_noise_e,
+            prnu_std=0.0, dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0,
+        )
+        rng = np.random.default_rng(iso_value)
+        bias_frames = [
+            _with_meta(
+                synth_sensor.frame(bias_model, exposure_s=1e-4, flux_e_per_s=0.0, temp_c=20.0, rng=rng),
+                iso=iso_value,
+            )
+            for _ in range(8)
+        ]
+        bias_dir = _save_npz_series(bias_frames, frames_root / f"bias_iso{iso_value}")
+        _run_cli(["camera", "bias", "--from", str(bias_dir)], warnings)
 
     lin_model = synth_sensor.SensorModel(
         shape=shape, gain_e_per_dn=gain, black_dn=black_dn, full_well_e=full_well_e,
@@ -393,7 +420,11 @@ def _run_color(records_dir: Path, out_dir: Path, warnings: list) -> tuple:
     tier_a_dir.mkdir(parents=True, exist_ok=True)
     rawmod.save_npz(frame, tier_a_dir / "chart0000.npz")
     corners_str = ",".join(f"{x:g},{y:g}" for x, y in corners)
-    _run_cli(["camera", "color", "fit", "--from", str(tier_a_dir), "--corners", corners_str, "--illuminant", "D65"], warnings)
+    # D50: `chart.reference_colorchecker()`'s values are D50-referenced, and
+    # `color.fit` refuses a chart photographed under a different illuminant
+    # than its reference's (a CAT can move a white point, it can't
+    # re-integrate a reflectance).
+    _run_cli(["camera", "color", "fit", "--from", str(tier_a_dir), "--corners", corners_str, "--illuminant", "D50"], warnings)
 
     camera_device_id = devicesmod.device_id(CAMERA_MODEL, None)
     tier_a_record = st.latest("camera.color", camera_device_id)

@@ -255,3 +255,18 @@ def test_save_npz_requires_npz_suffix(tmp_path):
     frame = _synthetic_frame()
     with pytest.raises(ValueError):
         raw.save_npz(frame, tmp_path / "frame0.raw")
+
+
+def test_load_dispatches_on_a_case_insensitive_npz_suffix(tmp_path):
+    """`.NPZ` is not `.npz`: the dispatch used to compare the suffix
+    literally, so an uppercase path went to rawpy and died with
+    LibRawFileUnsupportedError. The real raw extensions are listed in both
+    cases everywhere else."""
+    frame = _synthetic_frame()
+    path = raw.save_npz(frame, tmp_path / "frame0.npz")
+    upper = path.with_name("FRAME1.NPZ")
+    upper.write_bytes(path.read_bytes())
+
+    loaded = raw.load(upper)
+    assert np.array_equal(loaded.cfa, frame.cfa)
+    assert loaded.pattern == frame.pattern

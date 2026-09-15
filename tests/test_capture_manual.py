@@ -151,3 +151,27 @@ def test_scan_folder_accepts_npz_frames(tmp_path):
     assert len(manifest.entries) == 1
     assert manifest.entries[0].role == "bias"
     assert manifest.entries[0].frame is not None
+
+
+def test_near_black_frame_without_an_exposure_time_is_undecided_not_a_dark():
+    """`raw._read_metadata` returns an empty FrameMeta when neither exiftool
+    nor dcraw is installed -- a supported configuration ("pixels still
+    loaded, metadata just empty"). A near-black frame then has no exposure
+    time, and calling it "dark" made `camera bias --from DIR` report "no
+    bias frames found" on a folder of perfectly good bias frames, while
+    `camera darks` counted those same frames as darks. Bias and dark are
+    the same picture without an exposure time to tell them apart.
+    """
+    model = synth_sensor.SensorModel(shape=(64, 64), black_dn=512.0, read_noise_e=3.0)
+    rng = np.random.default_rng(0)
+    frame = synth_sensor.frame(model, exposure_s=0.001, flux_e_per_s=0.0, temp_c=20.0, rng=rng)
+
+    assert manual.classify(frame) == "bias"  # with its exposure time, it's a bias
+
+    stripped = replace(frame, meta=rawmod.FrameMeta(model=frame.meta.model))
+    assert stripped.meta.exposure_s is None
+    assert manual.classify(stripped) == "near_black"
+
+    # A long exposure with metadata is still a dark.
+    long_dark = synth_sensor.frame(model, exposure_s=30.0, flux_e_per_s=0.0, temp_c=20.0, rng=rng)
+    assert manual.classify(long_dark) == "dark"

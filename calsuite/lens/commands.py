@@ -32,7 +32,9 @@ from calsuite.lens.constants import DISPLAY_SQUARE_MM, R100_PIXEL_PITCH_MM as LE
 # (called for every `calsuite ...` invocation, `--help`/`doctor` included)
 # has no need to pay that cost just to build the argparse tree.
 
-_RAW_EXTENSIONS = {".cr3", ".CR3", ".dng", ".DNG", ".nef", ".NEF"} | rawmod.NPZ_EXTENSIONS
+_RAW_EXTENSIONS = {".cr3", ".CR3", ".dng", ".DNG", ".nef", ".NEF"} | rawmod.NPZ_EXTENSIONS | {
+    ext.upper() for ext in rawmod.NPZ_EXTENSIONS
+}
 # .npz (raw.save_npz's format) alongside real raw extensions -- lets a
 # synthetic session (no camera attached) exercise this module's CLI
 # commands exactly like a real folder of captures (docs/implementation-plan.md

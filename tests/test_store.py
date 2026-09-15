@@ -1,3 +1,4 @@
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -277,9 +278,20 @@ def test_store_latest_with_identical_timestamps_picks_one_deterministically(tmp_
     assert latest is not None
     assert latest.created == stamp
     assert latest.id in (r1.id, r2.id)
-    # Deterministic: sorted(glob) always yields aaaaaa before bbbbbb, and
-    # max() over a tie keeps the first-seen element.
-    assert latest.id == r1.id
+    # Deterministic, and deterministic by something stated rather than by
+    # directory iteration order: the tie is broken on `id`. (It used to fall
+    # out of sorted(glob) + max()'s first-seen-wins, i.e. out of new_id's
+    # random hex suffix, which is neither meaningful nor portable.) A
+    # one-second stamp genuinely doesn't say which record came first, so a
+    # caller who needs "the latest *passing* record" has to compare statuses
+    # and timestamps itself -- see doctor.check_unsuperseded_refusals.
+    assert latest.id == r2.id  # "bbbbbb" > "aaaaaa"
+
+    # Insertion order doesn't change the answer.
+    other = Store(tmp_path / "reversed")
+    other.save(r2)
+    other.save(r1)
+    assert other.latest("camera.bias", device["id"]).id == r2.id
 
 
 @pytest.mark.skipif(
@@ -303,3 +315,75 @@ def test_store_save_to_read_only_records_dir_raises_clearly(tmp_path):
             store.save(r)
     finally:
         device_dir.chmod(0o700)  # restore so tmp_path cleanup can remove it
+
+
+def test_save_refuses_a_non_finite_number_rather_than_writing_invalid_json(tmp_path):
+    """Python's json writes bare `NaN`/`Infinity` by default, which is not
+    valid JSON -- jq and every strict parser reject it, while Python's own
+    json.loads accepts it, so a record could be written and read back here
+    and still be unreadable everywhere else. `records/` is committed to a
+    public repo, and this was reachable: `devices.parse_edid` yields a NaN
+    gamma for an EDID that defers gamma to an extension block, and
+    `calsuite devices` writes that straight into a display.nominal record.
+    """
+    store = Store(tmp_path)
+    device = _device()
+    record = Record(schema=1, id="camera.bias-nan", kind="camera.bias", device=device, result={"gamma": float("nan")})
+    with pytest.raises(ValueError, match="non-finite"):
+        store.save(record)
+    assert not (tmp_path / device["id"] / "camera.bias-nan.json").exists()
+
+    record.result = {"gamma": None}
+    path = store.save(record)
+    assert json.loads(path.read_text(encoding="utf-8"))["result"]["gamma"] is None
+
+
+def test_resaving_a_record_does_not_leave_orphaned_sidecars(tmp_path):
+    """`record.artifacts` is reset on every save, but the .npz files it used
+    to name were never removed -- saving the same record with a different
+    artifact set left files on disk that no record references and
+    `load_artifact` can never verify."""
+    store = Store(tmp_path)
+    device = _device()
+    record = Record(schema=1, id="camera.darks-x", kind="camera.darks", device=device)
+    store.save(record, artifacts={"map_a": {"arr": np.arange(4)}})
+    device_dir = tmp_path / device["id"]
+    assert (device_dir / "camera.darks-x.map_a.npz").exists()
+
+    store.save(record, artifacts={"map_b": {"arr": np.arange(4)}})
+    assert (device_dir / "camera.darks-x.map_b.npz").exists()
+    assert not (device_dir / "camera.darks-x.map_a.npz").exists()
+    assert [a["name"] for a in record.artifacts] == ["map_b"]
+
+
+def test_a_failed_save_leaves_no_half_written_record(tmp_path):
+    """The JSON used to be serialized *after* the sidecars were already on
+    disk, so a record carrying something json can't encode (an ndarray left
+    in `result`) raised with a .npz present and no .json at all -- an
+    artifact no `Store.all` can ever find."""
+    store = Store(tmp_path)
+    device = _device()
+    record = Record(schema=1, id="camera.darks-y", kind="camera.darks", device=device, result={"arr": np.arange(3)})
+    with pytest.raises(TypeError):
+        store.save(record, artifacts={"m": {"arr": np.arange(4)}})
+    assert list((tmp_path / device["id"]).glob("camera.darks-y*.json")) == []
+
+
+def test_load_rejects_a_non_integer_schema(tmp_path):
+    """A record with "schema": "2" used to slip past the newer-schema guard
+    entirely and load as if it were schema 1."""
+    store = Store(tmp_path)
+    device = _device()
+    path = tmp_path / device["id"] / "weird.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema": "2", "id": "x", "kind": "camera.bias", "device": device}), encoding="utf-8")
+    with pytest.raises(RecordCorruptError):
+        store.load(path)
+
+
+def test_is_stale_accepts_a_naive_now(tmp_path):
+    """A naive `now` used to raise TypeError from inside a staleness check."""
+    store = Store(tmp_path)
+    record = Record(schema=1, id="camera.bias-z", kind="camera.bias", device=_device(), created="20250101T000000Z")
+    assert store.is_stale(record, now=datetime(2030, 1, 1)) is True
+    assert store.is_stale(record, now=datetime(2025, 1, 2)) is False

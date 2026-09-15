@@ -126,15 +126,42 @@ def check_firmware_changes(st: storemod.Store) -> list:
 # ---------------------------------------------------------------------------
 
 
+def _latest_nominal_by_connector(st: storemod.Store) -> dict:
+    """``{connector: newest display.nominal record for it}``, keyed on the
+    connector ``display/commands.py::build_nominal_record`` stored in
+    ``method.params``."""
+    out: dict = {}
+    for record in st.all(kind="display.nominal"):
+        connector = ((record.method or {}).get("params") or {}).get("connector")
+        if connector is None:
+            continue
+        previous = out.get(connector)
+        if previous is None or (record.created, record.id) > (previous.created, previous.id):
+            out[connector] = record
+    return out
+
+
 def check_edid_changes(st: storemod.Store, edid_blobs: dict | None = None) -> list:
     """``edid_blobs``: ``{connector: bytes}``, as ``devices.list_linux_edids()``
-    returns -- injectable for tests; defaults to reading the live machine."""
+    returns -- injectable for tests; defaults to reading the live machine.
+
+    Keyed on the **connector**, not on the device id. The device id is
+    ``slug(model)-sha256(serial)[:8]``, derived from the very EDID being
+    compared, so looking the stored record up by it could only ever find a
+    record written for the *same* panel identity: swap the panel for a
+    different model, or the same model with a different serial, and the
+    lookup found nothing, `stored_hash` was None, and the check stayed
+    silent -- for exactly the case its message names ("the panel behind
+    this connector may have changed"). A changed device id at the same
+    connector is itself the finding now.
+    """
     findings = []
     if edid_blobs is None:
         try:
             edid_blobs = devicesmod.list_linux_edids()
         except Exception:
             return findings
+    by_connector = _latest_nominal_by_connector(st)
     for connector, data in sorted(edid_blobs.items()):
         try:
             info = devicesmod.parse_edid(data)
@@ -142,8 +169,21 @@ def check_edid_changes(st: storemod.Store, edid_blobs: dict | None = None) -> li
             continue
         ref = devicesmod.display_ref(info)
         current_hash = devicesmod.edid_hash(data)
-        record = st.latest("display.nominal", ref.id)
-        stored_hash = record.result.get("edid_hash") if record is not None else None
+        record = by_connector.get(connector) or st.latest("display.nominal", ref.id)
+        if record is None:
+            continue
+        stored_id = record.device.get("id")
+        if stored_id != ref.id:
+            findings.append(
+                Finding(
+                    "edid",
+                    f"display at {connector}: the panel now identifies as {ref.id}, but the newest "
+                    f"display.nominal record for this connector ({record.id}) is for {stored_id} -- "
+                    "the panel behind this connector has changed",
+                )
+            )
+            continue
+        stored_hash = record.result.get("edid_hash")
         if stored_hash is not None and stored_hash != current_hash:
             findings.append(
                 Finding(
@@ -213,8 +253,19 @@ def check_unsuperseded_refusals(st: storemod.Store) -> list:
     for record in st.all():
         by_key.setdefault((record.device.get("id", "?"), record.kind), []).append(record)
     for (device_id, kind), records in sorted(by_key.items()):
-        latest = max(records, key=lambda r: r.created)
-        if latest.status == "refused":
+        latest_refusal = max((r for r in records if r.status == "refused"), key=lambda r: r.created, default=None)
+        if latest_refusal is None:
+            continue
+        # ``created`` has 1-second resolution, so a passing record saved in
+        # the same second as a refusal ties with it -- and `max` then broke
+        # the tie on iteration order, i.e. on `new_id`'s random hex suffix.
+        # Half the time that reported "latest record is refused and has not
+        # been superseded" while a passing record of the same kind sat right
+        # there. Check (e) above already guards the same hazard with `>=`
+        # for the same reason.
+        superseded = any(r.status == "ok" and r.created >= latest_refusal.created for r in records)
+        if not superseded:
+            latest = latest_refusal
             findings.append(
                 Finding(
                     "refused",

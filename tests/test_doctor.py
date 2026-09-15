@@ -1,3 +1,7 @@
+import pathlib
+
+import pytest
+
 from calsuite import doctor, store as storemod
 
 
@@ -90,6 +94,52 @@ def test_check_edid_changes_fires_with_real_edid(tmp_path):
     assert ref.id in findings[0].message
 
 
+def test_check_edid_changes_fires_when_the_panel_at_a_connector_is_a_different_one(tmp_path):
+    """The case the check's own message names -- "the panel behind this
+    connector may have changed" -- was the one case it could never report.
+    The stored record was looked up by `display_ref(info).id`, which is
+    `slug(model)-sha256(serial)[:8]` *of the EDID being compared*, so any
+    change to the model name or serial changed the key, found no record,
+    and the check stayed silent. It keys on the connector now.
+    """
+    from calsuite import devices as devicesmod
+
+    fixtures = pathlib.Path(__file__).parent / "fixtures"
+    edid_files = list(fixtures.glob("*edid*")) if fixtures.is_dir() else []
+    if not edid_files:
+        pytest.skip("no EDID fixture available")
+    data = edid_files[0].read_bytes()
+    live_ref = devicesmod.display_ref(devicesmod.parse_edid(data))
+
+    # A record for a *different* panel, written for this same connector.
+    other_panel = {"kind": "display", "model": "Some Other Panel", "id": "some-other-panel-12345678", "firmware": ""}
+    record = _record(
+        "display.nominal", other_panel, created=storemod.utcnow_stamp(), result={"edid_hash": "whatever"}
+    )
+    record.provenance = "nominal"
+    record.method = {"name": "display.nominal", "params": {"connector": "card0-eDP-1"}}
+    st = storemod.Store(tmp_path)
+    st.save(record)
+
+    findings = doctor.check_edid_changes(st, edid_blobs={"card0-eDP-1": data})
+    assert len(findings) == 1
+    assert live_ref.id in findings[0].message
+    assert "some-other-panel-12345678" in findings[0].message
+
+    # Same panel, same hash: silent.
+    same = _record(
+        "display.nominal",
+        live_ref.to_dict(),
+        created=storemod.utcnow_stamp(),
+        result={"edid_hash": devicesmod.edid_hash(data)},
+    )
+    same.provenance = "nominal"
+    same.method = {"name": "display.nominal", "params": {"connector": "card0-eDP-1"}}
+    st2 = storemod.Store(tmp_path / "clean")
+    st2.save(same)
+    assert doctor.check_edid_changes(st2, edid_blobs={"card0-eDP-1": data}) == []
+
+
 def test_check_profiles_without_recent_validation_fires(tmp_path):
     st = storemod.Store(tmp_path)
     st.save(_record("display.profile", DISPLAY, created="20250101T000000Z"))
@@ -160,3 +210,30 @@ def test_doctor_report_ok_false_when_any_warning():
     report2 = doctor.DoctorReport()
     report2.add("tools", "present thing", severity="info")
     assert report2.ok is True
+
+
+def test_unsuperseded_refusal_is_silent_when_a_passing_record_shares_the_same_second(tmp_path):
+    """`created` has 1-second resolution, so a passing record saved in the
+    same second as a refusal ties with it -- and `max` then broke the tie on
+    the glob order, i.e. on `new_id`'s random hex suffix, reporting "latest
+    record is refused and has not been superseded" about half the time with
+    a passing record of the same kind sitting right there. Check (e) already
+    guards the same hazard with `>=`.
+    """
+    st = storemod.Store(tmp_path)
+    stamp = "20260101T000000Z"
+    refused = _record("camera.ptc", CAMERA, created=stamp, status="refused")
+    refused.id = f"camera.ptc-{stamp}-zzzzzz"  # sorts *after* the passing one
+    passing = _record("camera.ptc", CAMERA, created=stamp, status="ok")
+    passing.id = f"camera.ptc-{stamp}-000000"
+    st.save(refused)
+    st.save(passing)
+
+    assert doctor.check_unsuperseded_refusals(st) == []
+
+    # An older passing record does not supersede a newer refusal.
+    st2 = storemod.Store(tmp_path / "older")
+    st2.save(_record("camera.ptc", CAMERA, created="20251231T235959Z", status="ok"))
+    st2.save(_record("camera.ptc", CAMERA, created=stamp, status="refused"))
+    findings = doctor.check_unsuperseded_refusals(st2)
+    assert len(findings) == 1
