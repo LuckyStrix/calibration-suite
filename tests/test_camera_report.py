@@ -215,3 +215,37 @@ def test_error_budget_still_computes_a_real_percentage_when_values_are_nonzero()
     by_quantity = {e["quantity"]: e for e in entries}
     assert by_quantity["gain"]["achieved"] == 5.0
     assert by_quantity["read noise"]["achieved"] == 10.0
+
+
+def test_fixed_pattern_section_renders_and_says_when_dsnu_is_unresolved():
+    """`camera.fixed_pattern` records had no section in the report at all
+    (and no command that could produce one)."""
+    record = _record(
+        "camera.fixed_pattern",
+        result={
+            "channels": {
+                "R": {
+                    "dsnu_std_dn": 1.25,
+                    "dsnu_resolved": True,
+                    "dsnu_temporal_floor_dn": 0.87,
+                    "prnu_std_pct": 0.9,
+                    "row_banding_peak_ratio": 2.1,
+                    "col_banding_peak_ratio": 1.8,
+                },
+                "G1": {
+                    "dsnu_std_dn": None,
+                    "dsnu_resolved": False,
+                    "dsnu_temporal_floor_dn": 0.91,
+                    "prnu_std_pct": 1.0,
+                    "row_banding_peak_ratio": 1.9,
+                    "col_banding_peak_ratio": 1.7,
+                },
+            }
+        },
+    )
+    html = report.render_sensor_report(
+        device={"kind": "camera", "model": "Canon EOS R100", "id": "x"}, fixed_pattern_record=record
+    )
+    assert "Fixed pattern" in html
+    assert "1.250 DN" in html
+    assert "not resolved above the 0.910 DN temporal-noise floor" in html

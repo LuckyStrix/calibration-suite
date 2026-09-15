@@ -167,3 +167,44 @@ def test_camera_color_subcommand_is_wired_in(capsys):
     rc = cli.main(["camera", "color"])
     assert rc in (0, 1)
     assert "camera color" in capsys.readouterr().out
+
+
+def test_camera_fixed_pattern_end_to_end_writes_a_record(tmp_path, monkeypatch):
+    """`camera/fixed_pattern.py` was implemented and unit-tested but
+    reachable from nothing: no command called `analyze_fixed_pattern`, so
+    the `camera.fixed_pattern` record kind that `store.SHELF_LIFE_DAYS`
+    declares -- and that `doctor.check_stale_records` looks for -- could
+    never exist. Its three inputs are three of the roles
+    `capture.manual.classify` already sorts a folder into.
+    """
+    monkeypatch.setenv("CALSUITE_RECORDS", str(tmp_path / "records"))
+    model = synth_sensor.SensorModel(
+        shape=(96, 96), black_dn=512.0, gain_e_per_dn=2.0, read_noise_e=3.0,
+        prnu_std=0.01, dsnu_std_e_per_s=0.5, hot_pixel_fraction=0.0, full_well_e=40_000.0,
+    )
+    rng = np.random.default_rng(5)
+    folder = tmp_path / "frames"
+    folder.mkdir()
+    frames = []
+    for _ in range(4):  # biases: near black, short exposure
+        frames.append(synth_sensor.frame(model, exposure_s=1e-4, flux_e_per_s=0.0, temp_c=20.0, rng=rng))
+    for _ in range(4):  # darks: near black, long exposure
+        frames.append(synth_sensor.frame(model, exposure_s=30.0, flux_e_per_s=0.0, temp_c=20.0, rng=rng))
+    for _ in range(4):  # flats: mid-level, spatially uniform
+        frames.append(synth_sensor.frame(model, exposure_s=0.1, flux_e_per_s=100_000.0, temp_c=20.0, rng=rng))
+    for i, frame in enumerate(frames):
+        rawmod.save_npz(frame, folder / f"{i:04d}.npz")
+
+    rc = cli.main(["camera", "fixed-pattern", "--from", str(folder)])
+    assert rc == 0
+
+    st = store.Store(tmp_path / "records")
+    records = list(st.all(kind="camera.fixed_pattern"))
+    assert len(records) == 1
+    channels = records[0].result["channels"]
+    assert set(channels) == {"R", "G1", "G2", "B"}
+    # PRNU was injected at 1%; DSNU is reported only if it clears the
+    # temporal-noise floor, and either way the floor itself is recorded.
+    assert channels["R"]["prnu_std_pct"] == pytest.approx(1.0, rel=0.3)
+    assert channels["R"]["dsnu_temporal_floor_dn"] > 0
+    assert records[0].conditions["n_darks"] == 4

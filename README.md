@@ -78,7 +78,8 @@ calsuite camera bias --from ~/calsuite-captures/bias/          # black level, re
 calsuite camera ptc --from ~/calsuite-captures/ptc/            # gain, read noise (photon transfer)
 calsuite camera linearity --from ~/calsuite-captures/flats/    # full well, linear range
 calsuite camera darks --from ~/calsuite-captures/darks/        # dark current, hot pixels, star-eater check
-calsuite camera iso --device-id <id>                           # ISO invariance, from the ptc/linearity records above
+calsuite camera fixed-pattern --from ~/calsuite-captures/fpn/  # DSNU, PRNU, banding (darks + flats + biases in one folder)
+calsuite camera iso --device-id <id>                           # ISO invariance, from the bias/ptc/linearity records above
 calsuite camera report --device-id <id> --out sensor.html
 ```
 

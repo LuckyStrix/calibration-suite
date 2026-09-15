@@ -102,6 +102,15 @@ def register(subparsers) -> None:
     install_p = display_sub.add_parser("install", help="install the latest profile")
     install_p.add_argument("--device-id", default=None)
     install_p.add_argument("--write-autostart", action="store_true", help="also write an Openbox autostart loader line")
+    install_p.add_argument(
+        "--colord-device",
+        default=None,
+        help="colord display device object path to attach the profile to (required when more than one display "
+        "is present -- `colormgr get-devices-by-kind display` lists them)",
+    )
+    install_p.add_argument(
+        "--dispwin-display", type=int, default=None, help="ArgyllCMS display number for `dispwin -d` (default: 1)"
+    )
     install_p.set_defaults(func=_cmd_install)
 
     validate_p = display_sub.add_parser("validate", help="validate the installed profile against the real display")
@@ -556,7 +565,12 @@ def _cmd_install(args) -> int:
     if sys.platform == "win32":
         report = install_windows.install(icc_path)
     else:
-        report = install_linux.install(icc_path, write_autostart=args.write_autostart)
+        report = install_linux.install(
+            icc_path,
+            write_autostart=args.write_autostart,
+            colord_device=args.colord_device,
+            dispwin_display=args.dispwin_display,
+        )
 
     for step in report.steps:
         print(f"  [{'ok' if step['ok'] else 'FAIL'}] {step['step']}: {step['detail']}")

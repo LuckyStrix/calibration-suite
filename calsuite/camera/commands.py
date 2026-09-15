@@ -291,6 +291,56 @@ def _cmd_linearity(args) -> int:
     )
 
 
+# -- fixed pattern (DSNU / PRNU / banding) ------------------------------------
+
+
+def _cmd_fixed_pattern(args) -> int:
+    """``camera.fixed_pattern`` from one folder holding all three roles.
+
+    `camera/fixed_pattern.py` was implemented and unit-tested but reachable
+    from nothing: no command called `analyze_fixed_pattern`, so the record
+    kind `store.SHELF_LIFE_DAYS` declares (and `doctor.check_stale_records`
+    looks for) could never exist. The three inputs it needs -- darks, flats
+    and biases -- are exactly three of the roles `capture.manual.classify`
+    already sorts a folder into, so one `--from DIR` covers it.
+    """
+    from calsuite.camera import fixed_pattern
+
+    folder = _resolve_from_dir(args)
+    manifest = manual.scan_folder(folder)
+    roles = {role: manifest.by_role(role) for role in ("dark", "flat", "bias")}
+    missing = [role for role, entries in roles.items() if not entries]
+    if missing:
+        print(
+            f"no {'/'.join(missing)} frames found in {folder}{_near_black_note(manifest)} -- "
+            "fixed-pattern analysis needs darks, flats and biases in one folder"
+        )
+        return 1
+
+    frames = {role: _load_frames(entries) for role, entries in roles.items()}
+    device_ref = devicesmod.camera_ref(frames["dark"][0].meta)
+    st = _store()
+    black_dn = _black_dn_from_store(st, device_ref.id, frames["bias"])
+    analysis = fixed_pattern.analyze_fixed_pattern(frames["dark"], frames["flat"], frames["bias"], black_dn)
+
+    all_frames = frames["dark"] + frames["flat"] + frames["bias"]
+    return _save(
+        st,
+        kind="camera.fixed_pattern",
+        device_ref=device_ref,
+        analysis=analysis,
+        method_name="camera.fixed_pattern",
+        conditions={
+            "iso": frames["dark"][0].meta.iso,
+            "n_darks": len(frames["dark"]),
+            "n_flats": len(frames["flat"]),
+            "n_biases": len(frames["bias"]),
+            "settings": settings.summarize(all_frames),
+        },
+        inputs=_inputs(all_frames),
+    )
+
+
 # -- darks (+ hot pixels, + star-eater when both a short and long exposure
 # group are present in the same folder) --------------------------------------
 
@@ -522,7 +572,10 @@ def _cmd_report(args) -> int:
     from calsuite.camera import report
 
     st = _store()
-    kinds = ("camera.bias", "camera.ptc", "camera.linearity", "camera.darks", "camera.iso", "camera.shutter")
+    kinds = (
+        "camera.bias", "camera.ptc", "camera.linearity", "camera.darks", "camera.iso", "camera.shutter",
+        "camera.fixed_pattern",
+    )
     latest = {kind: st.latest(kind, args.device_id) for kind in kinds}
     device = None
     for r in latest.values():
@@ -541,6 +594,7 @@ def _cmd_report(args) -> int:
         darks_record=latest["camera.darks"],
         iso_record=latest["camera.iso"],
         shutter_record=latest["camera.shutter"],
+        fixed_pattern_record=latest["camera.fixed_pattern"],
     )
     if args.out:
         Path(args.out).write_text(html, encoding="utf-8")
@@ -581,6 +635,12 @@ def register(subparsers) -> None:
     p = camera_subparsers.add_parser("darks", help="dark current, hot pixels, star-eater check")
     _add_common_capture_args(p, "darks")
     p.set_defaults(func=_cmd_darks)
+
+    p = camera_subparsers.add_parser(
+        "fixed-pattern", help="DSNU / PRNU / banding from darks + flats + biases in one folder"
+    )
+    _add_common_capture_args(p, "fixed-pattern")
+    p.set_defaults(func=_cmd_fixed_pattern)
 
     p = camera_subparsers.add_parser("shutter", help="shutter speed accuracy")
     _add_common_capture_args(p, "shutter")

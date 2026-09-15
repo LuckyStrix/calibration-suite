@@ -123,6 +123,52 @@ def _darks_section(record) -> dict | None:
     return {"heading": "Dark current + hot pixels", "html": chart + bars}
 
 
+def _fixed_pattern_section(record) -> dict | None:
+    """DSNU / PRNU / banding (design §3.1). `camera.fixed_pattern` records
+    had no section here at all -- the analysis wasn't reachable from the
+    CLI either, so nothing was being left out in practice; both halves of
+    that gap are closed together."""
+    if record is None:
+        return None
+    channels = record.result.get("channels", {})
+    if not channels:
+        return None
+    rows = []
+    for ch in CHANNEL_ORDER:
+        data = channels.get(ch)
+        if not data:
+            continue
+        dsnu = data.get("dsnu_std_dn")
+        floor = data.get("dsnu_temporal_floor_dn")
+        dsnu_text = (
+            f"{dsnu:.3f} DN"
+            if dsnu is not None
+            else f"not resolved above the {floor:.3f} DN temporal-noise floor"
+            if floor is not None
+            else "not resolved"
+        )
+        # A banding ratio is None when its noise floor is exactly zero (an
+        # unbounded ratio, which a record can't carry as a number).
+        row_band = report_html.optional_number(data.get("row_banding_peak_ratio"), "{:.1f}")
+        col_band = report_html.optional_number(data.get("col_banding_peak_ratio"), "{:.1f}")
+        prnu = report_html.optional_number(data.get("prnu_std_pct"), "{:.2f}")
+        rows.append(
+            f"<tr><td>{ch}</td><td>{dsnu_text}</td><td>{prnu}%</td>"
+            f"<td>{row_band}</td><td>{col_band}</td></tr>"
+        )
+    table = (
+        "<table><thead><tr><th>channel</th><th>DSNU</th><th>PRNU</th>"
+        "<th>row banding peak/median</th><th>col banding peak/median</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+    note = (
+        "<p><em>DSNU is reported only when the pattern clears the temporal-noise floor that stacking N darks "
+        "leaves behind (var/N), which a raw stacked-image std would otherwise report as the pattern "
+        "itself.</em></p>"
+    )
+    return {"heading": "Fixed pattern (DSNU / PRNU / banding)", "html": table + note}
+
+
 def _max_ratio_pct(numerators: list, denominators: list) -> float | None:
     """``max(n / d) * 100`` over paired numerators/denominators, skipping
     any pair whose denominator is zero -- a zero gain/read-noise value is a
@@ -195,6 +241,7 @@ def render_sensor_report(
     darks_record=None,
     iso_record=None,
     shutter_record=None,
+    fixed_pattern_record=None,
 ) -> str:
     """Assemble the single-file sensor HTML report from whichever records
     are available. ``device``: a ``devices.DeviceRef.to_dict()``-shaped
@@ -204,11 +251,25 @@ def render_sensor_report(
     # ptc if we have it (the record most other numbers here hang off of),
     # else whichever record is available first, else a bare "no data" shell.
     primary = next(
-        (r for r in (ptc_record, bias_record, linearity_record, darks_record, iso_record, shutter_record) if r is not None),
+        (
+            r
+            for r in (
+                ptc_record, bias_record, linearity_record, darks_record, iso_record, shutter_record,
+                fixed_pattern_record,
+            )
+            if r is not None
+        ),
         None,
     )
     provenance = primary.provenance if primary else "nominal"
-    records = [r for r in (bias_record, ptc_record, linearity_record, darks_record, iso_record, shutter_record) if r]
+    records = [
+        r
+        for r in (
+            bias_record, ptc_record, linearity_record, darks_record, iso_record, shutter_record,
+            fixed_pattern_record,
+        )
+        if r
+    ]
     # The page's status is pooled over *every* record shown on it, the same
     # way the refusals below are. Taking it from `primary` alone badged a
     # page "ok" while listing another record's refusals right underneath --
@@ -228,6 +289,7 @@ def render_sensor_report(
         _read_noise_vs_iso_section(iso_record),
         _linearity_section(linearity_record),
         _darks_section(darks_record),
+        _fixed_pattern_section(fixed_pattern_record),
     ):
         if section is not None:
             sections.append(section)

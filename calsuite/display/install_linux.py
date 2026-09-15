@@ -69,15 +69,44 @@ def import_profile(icc_path: Path) -> tuple:
     return object_path, result.stdout
 
 
+def list_display_devices() -> tuple:
+    """`colormgr get-devices-by-kind display` -- **every** display device's
+    object path, in the order colord lists them, plus the raw stdout."""
+    result = tools.run(["colormgr", "get-devices-by-kind", "display"], check=False)
+    paths = []
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        for key in ("Object Path", "Device ID", "Device"):
+            if stripped.lower().startswith(f"{key}:".lower()):
+                value = stripped.split(":", 1)[1].strip()
+                if value and value not in paths:
+                    paths.append(value)
+                break
+    return paths, result.stdout
+
+
 def find_display_device() -> tuple:
     """`colormgr get-devices-by-kind display` -- the first display
-    device's object path, or `(None, stdout)` if none was found/parsed."""
-    result = tools.run(["colormgr", "get-devices-by-kind", "display"], check=False)
-    device_path = _parse_id_line(result.stdout, ("Object Path", "Device ID", "Device"))
-    return device_path, result.stdout
+    device's object path, or `(None, stdout)` if none was found/parsed.
+
+    "The first" is only ever the right answer on a single-display machine;
+    ``install_colormgr`` refuses to guess when there is more than one. See
+    ``list_display_devices``."""
+    paths, stdout = list_display_devices()
+    return (paths[0] if paths else None), stdout
 
 
-def install_colormgr(icc_path: Path) -> InstallReport:
+def install_colormgr(icc_path: Path, *, device_path: str | None = None) -> InstallReport:
+    """Import the profile into colord and make it this display's default.
+
+    ``device_path`` names *which* colord display device to attach it to. On
+    a multi-monitor machine this is not optional and cannot be guessed: the
+    profile was measured for one specific panel, and colord's enumeration
+    order says nothing about which one that is -- attaching it to the wrong
+    display silently colour-manages the wrong screen with it. With more than
+    one display device present and no ``device_path`` given, this reports a
+    failed step listing the candidates rather than picking one.
+    """
     report = InstallReport()
     if tools.which("colormgr") is None:
         report.add("colormgr import-profile", False, "colormgr not found on PATH")
@@ -93,12 +122,34 @@ def install_colormgr(icc_path: Path) -> InstallReport:
         return report
 
     try:
-        device_id, _ = find_display_device()
+        candidates, _ = list_display_devices()
     except tools.ToolError as exc:
         report.add("colormgr get-devices-by-kind display", False, str(exc))
         return report
-    report.add("colormgr get-devices-by-kind display", device_id is not None, f"device id: {device_id!r}")
-    if device_id is None:
+
+    if device_path is not None:
+        device_id = device_path
+        if candidates and device_path not in candidates:
+            report.add(
+                "colormgr get-devices-by-kind display",
+                False,
+                f"{device_path!r} is not among colord's display devices: {candidates}",
+            )
+            return report
+        report.add("colormgr get-devices-by-kind display", True, f"device id: {device_id!r} (given)")
+    elif len(candidates) == 1:
+        device_id = candidates[0]
+        report.add("colormgr get-devices-by-kind display", True, f"device id: {device_id!r}")
+    elif not candidates:
+        report.add("colormgr get-devices-by-kind display", False, "no display device found")
+        return report
+    else:
+        report.add(
+            "colormgr get-devices-by-kind display",
+            False,
+            f"{len(candidates)} display devices present ({candidates}) -- pass --colord-device to say which one "
+            "this profile is for; colord's enumeration order doesn't identify the panel that was measured",
+        )
         return report
 
     try:
@@ -117,16 +168,22 @@ def install_colormgr(icc_path: Path) -> InstallReport:
     return report
 
 
-def install_dispwin(icc_path: Path) -> InstallReport:
+def install_dispwin(icc_path: Path, *, display: int | None = None) -> InstallReport:
     """`dispwin -I <path>`: sets the `_ICC_PROFILE` X atom and loads the
-    VCGT curves for the current session (design §5.5)."""
+    VCGT curves for the current session (design §5.5). ``display`` becomes
+    ``dispwin -d <n>`` -- without it dispwin loads the curves into display
+    1, which is only the right screen on a single-display machine."""
     report = InstallReport()
     if tools.which("dispwin") is None:
         report.add("dispwin -I", False, "dispwin not found on PATH")
         return report
+    argv = ["dispwin"]
+    if display is not None:
+        argv += ["-d", str(display)]
+    argv += ["-I", str(icc_path)]
     try:
-        tools.run(["dispwin", "-I", str(icc_path)])
-        report.add("dispwin -I", True)
+        tools.run(argv)
+        report.add("dispwin -I", True, f"display {display}" if display is not None else "")
     except tools.ToolError as exc:
         report.add("dispwin -I", False, str(exc))
     return report
@@ -163,13 +220,22 @@ def write_autostart_entry(icc_path: Path, *, autostart_path: Path = AUTOSTART_PA
     return report
 
 
-def install(icc_path: Path, *, write_autostart: bool = False, autostart_path: Path = AUTOSTART_PATH) -> InstallReport:
+def install(
+    icc_path: Path,
+    *,
+    write_autostart: bool = False,
+    autostart_path: Path = AUTOSTART_PATH,
+    colord_device: str | None = None,
+    dispwin_display: int | None = None,
+) -> InstallReport:
     """Full Linux install path: colormgr, then `dispwin -I`, then (only if
     `write_autostart`) the Openbox autostart entry. One combined report so
-    `display/commands.py` can print exactly what was done, in order."""
+    `display/commands.py` can print exactly what was done, in order.
+    ``colord_device``/``dispwin_display`` name which screen on a
+    multi-monitor machine -- see ``install_colormgr``."""
     report = InstallReport()
-    report.steps += install_colormgr(icc_path).steps
-    report.steps += install_dispwin(icc_path).steps
+    report.steps += install_colormgr(icc_path, device_path=colord_device).steps
+    report.steps += install_dispwin(icc_path, display=dispwin_display).steps
     if write_autostart:
         report.steps += write_autostart_entry(icc_path, autostart_path=autostart_path).steps
     return report

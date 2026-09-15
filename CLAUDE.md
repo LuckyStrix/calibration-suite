@@ -148,6 +148,26 @@ image rendering a second time.
   one copy of the black offset, so naively summing R+G+B triples it against
   a W that only has one; each channel is black-corrected before summing,
   and the black term is added back exactly once.
+- **A reference chart's XYZ belong to *its* illuminant.** A chart's values
+  are its patches' reflectances integrated against the illuminant it states
+  (D50, for colour-science's ColorChecker24), and no chromatic adaptation
+  re-integrates a reflectance: a CAT moves a white point. `color.fit`
+  therefore refuses when `--illuminant` disagrees materially with
+  `ReferenceChart.illuminant_xy` (`REFERENCE_ILLUMINANT_XY_MAX_DELTA`), and
+  the record carries both. Fitting the D50 chart under D65 — which every
+  test and `demo.py` used to do — costs ΔE00 2.1 mean / 5.7 max in the fit
+  targets before the camera is involved. The escape hatch for shooting under
+  something else is a reference measured under it
+  (`chart.reference_from_csv(..., illuminant_xy=...)`).
+- **Display validation compares in the profile's own space.**
+  `display/profile.py` Bradford-adapts to D50 (what an ICC matrix/TRC
+  profile's tags mean, and what lcms reproduces), so `validate()` must too —
+  `analysis.xyz_to_lab_pcs`, not `xyz_to_lab`'s normalize-by-the-display's-
+  own-white. The two disagree by ~1.2 ΔE00 mean / 4.5 p95 on a *perfect*
+  profile of a noise-free synthetic display, concentrated in the blues,
+  which is enough to refuse a correct profile against a real colorimeter's
+  thresholds. `xyz_to_lab` stays right for same-white comparisons
+  (`uniformity`, where every cell is measured against the center cell).
 - **The leave-one-out-fold caveat is not a footnote.** `camera/color.py`'s
   Tier-A/C validation, when no explicit held-out set is given, refits the
   matrix once per left-out patch — but each fold uses the cheap *linear*
@@ -167,18 +187,22 @@ image rendering a second time.
   why that disagreement is itself useful — it's longitudinal CA), and why a
   color matrix fit never has a demosaic algorithm's own color-fringing
   baked invisibly into its residuals.
-- **`RawFrame.black_level`'s 4 values are not named "R"/"G1"/"G2"/"B" by
-  position.** They're in rawpy/libraw's own channel-index order
-  (`raw.black_level_by_channel`'s docstring has the full derivation:
-  confirmed against LibRaw's `cblack[0..3]` convention), which only lines up
-  with `raw.planes()`'s raster-position-based G1/G2 naming when both visible
-  margins are even (true for the R100: 56/288). Two call sites
-  (`camera/bias.py`'s metadata comparison, `camera/chart.py`'s
-  uneven-lighting check, and `camera/color.py`'s black subtraction) used to
-  work around the missing mapping with a plain `mean(black_level)` scalar —
-  silently wrong on any sensor whose G1 and G2 amplifier chains read a
-  different black level. `raw.black_level_by_channel(frame)` is the one
-  place that mapping is done correctly; use it, don't re-derive a scalar.
+- **`RawFrame.black_level`'s 4 values are indexed by *color*, not by
+  position.** They're LibRaw's `cblack[0..3]`: one value per color-filter
+  index of `color_desc`, i.e. **R, first-G, B, second-G** — verified against
+  this project's own reference capture, where rawpy reports
+  `color_desc=b"RGBG"` and `raw_pattern=[[0,1],[3,2]]`, so B is index 2 at
+  raster position (1,1) while the second green is index 3 at (1,0). Zipping
+  the four values onto raster positions — which `black_level_by_channel`
+  did, against its own docstring — therefore swaps **B and G2 on every
+  standard Bayer sensor**, silently wrong in exactly the case the function
+  exists for. Only the two greens are affected by the visible-origin phase
+  shift (R is R and B is B wherever they sit), and that shift is undone
+  before they're named. `synth.sensor._black_level_tuple` re-derives the
+  order rather than mirroring the same table, because written as a literal
+  mirror the round-trip test could only prove the mapping was a bijection —
+  which is how the swap survived. `raw.black_level_by_channel(frame)` is the
+  one place this is done; use it, never a `mean(black_level)` scalar.
 - **A slanted-edge/ChArUco target can land in the exact same mean-DN band as
   a flat.** `capture.manual.classify()` doesn't stop at "is the mean signal
   10-90% of the DN range" — it also checks spatial uniformity
@@ -187,7 +211,12 @@ image rendering a second time.
   *mean* is bimodal and has a much higher CV. A caller that already knows
   every frame in a folder is one role (`lens/commands.py`'s own commands, for
   exactly this reason) can skip the heuristic entirely via
-  `expected_role=`/`classify(frame, expected_role=...)`.
+  `expected_role=`/`classify(frame, expected_role=...)`. A near-black frame
+  with **no exposure time** (what `raw._read_metadata` gives you when neither
+  exiftool nor dcraw is installed) is classified `near_black`, not `dark`:
+  bias and dark are the same picture without an exposure time to tell them
+  apart, and calling it either one hid a whole folder of bias frames from
+  `camera bias`.
 
 ## Conventions
 

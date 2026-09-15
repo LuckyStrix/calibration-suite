@@ -148,15 +148,20 @@ def analyze_fixed_pattern(darks: list, flats: list, biases: list, black_dn) -> A
     for ch in CHANNELS:
         row_peak, row_idx, row_median = _peak_excluding_dc(banding[ch]["row"])
         col_peak, col_idx, col_median = _peak_excluding_dc(banding[ch]["col"])
+
         channels_result[ch] = {
             "dsnu_std_dn": dsnu[ch]["dsnu_std_dn"],
             "dsnu_resolved": dsnu[ch]["resolved"],
             "dsnu_temporal_floor_dn": dsnu[ch]["temporal_floor_dn"],
             "dsnu_observed_std_dn": dsnu[ch]["observed_std_dn"],
             "prnu_std_pct": float(prnu[ch].std()) * 100.0,
-            "row_banding_peak_ratio": row_peak / row_median if row_median else float("inf"),
+            # None, not inf: a zero median means the ratio is unbounded, and
+            # `Store.save` (rightly) refuses to write a non-finite number
+            # into a record -- `Infinity` is not valid JSON. The peak
+            # magnitude itself is carried below either way.
+            "row_banding_peak_ratio": (row_peak / row_median) if row_median else None,
             "row_banding_peak_cycles_per_frame": row_idx,
-            "col_banding_peak_ratio": col_peak / col_median if col_median else float("inf"),
+            "col_banding_peak_ratio": (col_peak / col_median) if col_median else None,
             "col_banding_peak_cycles_per_frame": col_idx,
         }
 

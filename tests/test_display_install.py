@@ -77,3 +77,38 @@ def test_install_windows_guard_off_windows():
     report = install_windows.install("x.icc")
     assert not report.ok
     assert report.steps[0]["step"] == "platform"
+
+
+def test_install_colormgr_refuses_to_guess_between_two_displays(fake_bin, tmp_path):
+    """`find_display_device` returned whichever display colord enumerated
+    first, and `install_colormgr` attached the profile to it -- so on a
+    multi-monitor machine the profile measured for one panel was made the
+    default for another, silently. The measured panel's identity is in the
+    record; colord's enumeration order says nothing about it.
+    """
+    fake_bin(
+        "colormgr",
+        "import sys\n"
+        "args = sys.argv[1:]\n"
+        "if args[0] == 'import-profile':\n"
+        "    print('Object Path: /org/freedesktop/ColorManager/profiles/p1')\n"
+        "elif args[0] == 'get-devices-by-kind':\n"
+        "    print('Object Path: /org/freedesktop/ColorManager/devices/d1')\n"
+        "    print('Object Path: /org/freedesktop/ColorManager/devices/d2')\n",
+    )
+    icc = tmp_path / "p.icc"
+    icc.write_bytes(b"not a real profile")
+
+    report = install_linux.install_colormgr(icc)
+    assert not report.ok
+    step = [s for s in report.steps if s["step"] == "colormgr get-devices-by-kind display"][0]
+    assert "2 display devices" in step["detail"]
+    assert "--colord-device" in step["detail"]
+
+    # Told which one, it proceeds.
+    chosen = install_linux.install_colormgr(icc, device_path="/org/freedesktop/ColorManager/devices/d2")
+    assert chosen.ok, chosen.steps
+
+    # An unknown device path is an error, not a silent fallback to the first.
+    wrong = install_linux.install_colormgr(icc, device_path="/org/freedesktop/ColorManager/devices/nope")
+    assert not wrong.ok
