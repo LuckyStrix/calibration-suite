@@ -13,7 +13,15 @@ import numpy as np
 from scipy import ndimage
 
 from calsuite.fit import Analysis
-from calsuite.lens.constants import PSF_MIN_SNR, PSF_SATURATION_FRACTION, PSF_WINDOW_RADIUS_PX
+from calsuite.lens.constants import (
+    PSF_BACKGROUND_ANNULUS_FACTOR,
+    PSF_MIN_SNR,
+    PSF_MOMENT_WINDOW_ITERATIONS,
+    PSF_MOMENT_WINDOW_MIN_PX,
+    PSF_MOMENT_WINDOW_SIGMAS,
+    PSF_SATURATION_FRACTION,
+    PSF_WINDOW_RADIUS_PX,
+)
 
 FWHM_PER_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))  # ~2.3548, the standard Gaussian FWHM/sigma ratio
 
@@ -56,32 +64,78 @@ def is_saturated(plane: np.ndarray, x0: float, y0: float, *, window: int = PSF_W
     return float(sub.max()) >= saturation_dn * PSF_SATURATION_FRACTION
 
 
-def moments(plane: np.ndarray, x0: float, y0: float, *, window: int = PSF_WINDOW_RADIUS_PX) -> dict | None:
-    """Intensity-weighted second/third moments of the blob nearest
-    ``(x0, y0)``, in a ``2*window+1`` square window. Returns ``None`` if
-    the window's background-subtracted flux is non-positive (nothing to
-    measure). Saturation is checked separately (``is_saturated``, called by
-    ``psf_field`` before this) since a clipped blob still has positive flux
-    -- it's biased, not absent."""
+def _window_moments(plane: np.ndarray, cx: float, cy: float, window: int) -> tuple | None:
+    """Raw moment sums in one square window, with the background estimated
+    from an annulus *outside* it (falling back to the window's own median
+    only when the annulus is empty). Returns
+    ``(cx, cy, mxx, myy, mxy, xx, yy, weights, total)``."""
     h, w = plane.shape
-    xi0, xi1 = max(int(x0 - window), 0), min(int(x0 + window + 1), w)
-    yi0, yi1 = max(int(y0 - window), 0), min(int(y0 + window + 1), h)
+    xi0, xi1 = max(int(cx - window), 0), min(int(cx + window + 1), w)
+    yi0, yi1 = max(int(cy - window), 0), min(int(cy + window + 1), h)
     sub = plane[yi0:yi1, xi0:xi1].astype(np.float64)
     if sub.size == 0:
         return None
+
+    outer = int(round(PSF_BACKGROUND_ANNULUS_FACTOR * window))
+    axi0, axi1 = max(int(cx - outer), 0), min(int(cx + outer + 1), w)
+    ayi0, ayi1 = max(int(cy - outer), 0), min(int(cy + outer + 1), h)
+    ring = plane[ayi0:ayi1, axi0:axi1].astype(np.float64)
+    ring_mask = np.ones(ring.shape, dtype=bool)
+    ring_mask[yi0 - ayi0 : yi1 - ayi0, xi0 - axi0 : xi1 - axi0] = False
+    background = float(np.median(ring[ring_mask])) if ring_mask.any() else float(np.median(sub))
+
     yy, xx = np.mgrid[yi0:yi1, xi0:xi1].astype(np.float64)
-    background = float(np.median(sub))
     weights = np.clip(sub - background, 0.0, None)
     total = float(weights.sum())
     if total <= 0:
         return None
-
     cx = float((weights * xx).sum() / total)
     cy = float((weights * yy).sum() / total)
     dx, dy = xx - cx, yy - cy
     mxx = float((weights * dx * dx).sum() / total)
     myy = float((weights * dy * dy).sum() / total)
     mxy = float((weights * dx * dy).sum() / total)
+    return cx, cy, mxx, myy, mxy, xx, yy, weights, total
+
+
+def moments(plane: np.ndarray, x0: float, y0: float, *, window: int = PSF_WINDOW_RADIUS_PX) -> dict | None:
+    """Intensity-weighted second/third moments of the blob nearest
+    ``(x0, y0)``. Returns ``None`` if the background-subtracted flux is
+    non-positive (nothing to measure). Saturation is checked separately
+    (``is_saturated``, called by ``psf_field`` before this) since a clipped
+    blob still has positive flux -- it's biased, not absent.
+
+    The window is *iterated*: a first pass over the full ``window``, then a
+    re-measure in a window sized to the blob's own measured sigma
+    (``PSF_MOMENT_WINDOW_SIGMAS``), with the background from an annulus
+    outside it. A single fixed window biases every blob smaller than
+    itself: the sums are r^2-weighted, so noise in the far corners of a
+    15 px window carries ~56x the leverage it has at the core of a 2 px
+    blob, and the window's own median over-estimates the background of a
+    blob that fills it. See PSF_MOMENT_WINDOW_SIGMAS for the measured
+    error (a truth-2.0/1.0 star read 2.05/1.13, i.e. 13% too round).
+
+    The returned ``window_px`` is the window the reported moments came
+    from, and ``window_truncated`` says whether the blob is wide enough
+    that even the full ``window`` clips its wings -- in which case the
+    reported sigmas are biased low.
+    """
+    result = _window_moments(plane, x0, y0, window)
+    if result is None:
+        return None
+    used_window = window
+    for _ in range(PSF_MOMENT_WINDOW_ITERATIONS):
+        sigma_major_est = math.sqrt(max(max(result[2], result[3]), 0.0))
+        next_window = int(np.clip(round(PSF_MOMENT_WINDOW_SIGMAS * sigma_major_est), PSF_MOMENT_WINDOW_MIN_PX, window))
+        if next_window == used_window:
+            break
+        refined = _window_moments(plane, result[0], result[1], next_window)
+        if refined is None:
+            break
+        result, used_window = refined, next_window
+
+    cx, cy, mxx, myy, mxy, xx, yy, weights, total = result
+    dx, dy = xx - cx, yy - cy
 
     cov = np.array([[mxx, mxy], [mxy, myy]])
     eigvals, eigvecs = np.linalg.eigh(cov)  # ascending order
@@ -99,6 +153,8 @@ def moments(plane: np.ndarray, x0: float, y0: float, *, window: int = PSF_WINDOW
     return {
         "x": cx,
         "y": cy,
+        "window_px": used_window,
+        "window_truncated": bool(sigma_major * PSF_MOMENT_WINDOW_SIGMAS > window),
         "sigma_major": sigma_major,
         "sigma_minor": sigma_minor,
         "fwhm_major": sigma_major * FWHM_PER_SIGMA,

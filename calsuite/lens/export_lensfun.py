@@ -26,7 +26,7 @@ def build_xml(
     lens_model: str,
     lens_maker: str = C.DEFAULT_LENS_MAKER,
     lens_mount: str = C.DEFAULT_LENS_MOUNT,
-    lens_cropfactor: float = 1.0,
+    lens_cropfactor: float = C.R100_CROP_FACTOR,
     camera_model: str = C.DEFAULT_CAMERA_MODEL,
     camera_maker: str = C.DEFAULT_CAMERA_MAKER,
     camera_mount: str = C.DEFAULT_LENS_MOUNT,
@@ -44,6 +44,16 @@ def build_xml(
     entry's own convention).
     ``vignetting``: a list of ``{"focal": mm, "aperture": f, "distance": m,
     "k1":, "k2":, "k3":}``, one ``<vignetting>`` element each.
+
+    ``lens_cropfactor`` is **the crop factor of the body the calibration was
+    shot on**, not the lens's coverage: lensfun rescales the normalized
+    radius by the ratio of this to the camera's own cropfactor, so declaring
+    1.0 for a calibration made on a 1.613-crop body silently rescales every
+    coefficient. Checked against liblensfun 0.3.4 through lensfunpy: the
+    same ptlens a/b/c on the same R100 entry move a corner source pixel
+    from 3.77 px to 2.80 px between cropfactor 1.613 and 1.0 -- roughly 30%
+    of the whole correction. It therefore defaults to the same body
+    constant the ``<camera>`` block uses.
     """
     root = ET.Element("lensdatabase", version="1")
 
@@ -102,7 +112,7 @@ def export_records(
     distortion_record=None,
     tca_record=None,
     flats_records: list | None = None,
-    lens_cropfactor: float = 1.0,
+    lens_cropfactor: float = C.R100_CROP_FACTOR,
     camera_model: str = C.DEFAULT_CAMERA_MODEL,
     camera_cropfactor: float = C.R100_CROP_FACTOR,
 ) -> str:
@@ -194,14 +204,26 @@ def write_lensfun(xml_text: str, *, out: Path | str | None = None, filename: str
 def parse_vendor_lens(xml_path: Path | str, lens_model: str) -> dict | None:
     """Every ``<distortion>``/``<tca>``/``<vignetting>`` element (as plain
     attribute dicts) for the ``<lens>`` block whose ``<model>`` matches
-    ``lens_model`` in a lensfun database file -- ``None`` if no such lens
-    is in the file."""
+    ``lens_model`` in a lensfun database file, plus that block's own
+    ``<cropfactor>`` -- ``None`` if no such lens is in the file.
+
+    The cropfactor is part of the answer, not decoration: lensfun's
+    distortion coefficients are defined against a normalized radius that
+    is rescaled by the ratio of the calibration body's cropfactor to the
+    camera's, so two entries' a/b/c are only comparable when they declare
+    the same one."""
     tree = ET.parse(xml_path)
     for lens_el in tree.getroot().findall("lens"):
         model_el = lens_el.find("model")
         if model_el is None or model_el.text != lens_model:
             continue
-        out = {"distortion": [], "tca": [], "vignetting": []}
+        crop_el = lens_el.find("cropfactor")
+        out = {
+            "distortion": [],
+            "tca": [],
+            "vignetting": [],
+            "cropfactor": float(crop_el.text) if crop_el is not None and crop_el.text else None,
+        }
         calibration_el = lens_el.find("calibration")
         if calibration_el is not None:
             for tag in ("distortion", "tca", "vignetting"):
@@ -216,6 +238,7 @@ def compare_with_vendor(
     *,
     system_xml_path: Path | str | None = None,
     lens_model: str = C.VENDOR_COMPARISON_LENS_MODEL,
+    our_cropfactor: float = C.R100_CROP_FACTOR,
 ) -> dict:
     """Compare our distortion/TCA fit against the vendor entry already in
     the system lensfun database (provenance ``"vendor"``,
@@ -232,10 +255,34 @@ def compare_with_vendor(
     if vendor is None:
         return {"available": False, "reason": f"{lens_model!r} not found in {system_xml_path}"}
 
-    comparison = {"available": True, "provenance": "vendor", "lens_model": lens_model, "vendor": vendor}
+    comparison = {
+        "available": True,
+        "provenance": "vendor",
+        "lens_model": lens_model,
+        "vendor": vendor,
+        "our_cropfactor": our_cropfactor,
+        "vendor_cropfactor": vendor.get("cropfactor"),
+    }
     if vendor["distortion"]:
         vd = vendor["distortion"][0]
-        if vd.get("model") == "ptlens":
+        vendor_crop = vendor.get("cropfactor")
+        if vd.get("model") != "ptlens":
+            comparison["distortion_diff"] = None
+            comparison["distortion_diff_unavailable"] = f"vendor entry uses the {vd.get('model')!r} model, ours is ptlens"
+        elif vendor_crop is None or abs(vendor_crop - our_cropfactor) > C.VENDOR_CROPFACTOR_MATCH_TOLERANCE:
+            # a/b/c live in a normalized radius that lensfun rescales by the
+            # ratio of the two cropfactors, so subtracting them across
+            # different cropfactors differences two different quantities --
+            # the vendor RF 50 entry declares 1.0 (full frame), ours is the
+            # R100's 1.613, and that ratio enters as lambda, lambda^2,
+            # lambda^3 term by term, before any physical difference.
+            comparison["distortion_diff"] = None
+            comparison["distortion_diff_unavailable"] = (
+                f"vendor entry is calibrated at cropfactor {vendor_crop}, ours at {our_cropfactor:.3f} -- "
+                "ptlens a/b/c are normalized against a cropfactor-dependent radius, so the coefficients are "
+                "not directly comparable"
+            )
+        else:
             comparison["distortion_diff"] = {
                 term: our_ptlens[term] - float(vd[term]) for term in C.LENSFUN_DISTORTION_PTLENS_TERMS if term in vd
             }

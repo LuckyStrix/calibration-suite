@@ -333,6 +333,42 @@ FLAT_COND_THRESHOLD = 1.0e6
 # mtf.py -- slanted-edge e-SFR (ISO 12233)
 # ---------------------------------------------------------------------------
 
+VENDOR_CROPFACTOR_MATCH_TOLERANCE = 0.01
+# How close two lensfun entries' <cropfactor> values must be before their
+# distortion coefficients are differenced against each other. lensfun
+# rescales the normalized radius by the ratio of the calibration
+# cropfactor to the camera's, and ptlens's a/b/c multiply r^3/r^2/r, so
+# that ratio enters as lambda^3/lambda^2/lambda term by term: the system
+# database's RF 50 entry declares 1.0, this suite calibrates at the R100's
+# 1.613, and subtracting the two sets differences two different
+# quantities. 0.01 is "the same body class", not a physical threshold.
+
+MTF_LSF_WINDOW_SIGMAS = 5.0
+MTF_LSF_WINDOW_FLAT_FRACTION = 0.5
+# The LSF is windowed before the FFT with a *Tukey* (flat-topped) window
+# centered on the LSF's own centroid: unity out to
+# FLAT_FRACTION * SIGMAS = 2.5 sigma, a raised-cosine taper to zero from
+# there to 5 sigma, zero beyond.
+#
+# The window exists to keep the ends of the finite ESF span from ringing
+# into the transform; what it must not do is narrow the LSF, because a
+# narrower LSF is a *higher* MTF50. Measured against the analytic ground
+# truth of a synthetic erf edge (MTF = exp(-2 pi^2 sigma^2 f^2), so f50 is
+# known in closed form), MTF50 error at sigma = 0.5 / 1 / 2 plane px:
+#
+#   np.hamming(lsf.size)   (fixed span)   -1.3%  +1.2%  +7.3%
+#   Hamming scaled to 4 sigma             -1.3%  +1.4%  +6.2%
+#   no window at all                      -0.5%  -0.6%  +0.8%
+#   this Tukey (5 sigma, 50% flat)        -1.2%  -0.6%  +0.8%
+#
+# A Hamming window is the wrong shape here however it is scaled -- it
+# starts tapering at its own center (0.87 at 1 sigma when scaled to 4),
+# which is exactly where the LSF's information is. The bias it leaves is
+# worst at the soft field corners the 3x5 field grid exists to
+# characterize, and it is a bias toward *better* sharpness numbers.
+# The flat-topped version matches the no-window accuracy while still
+# bringing both ends of the array to zero.
+
 MTF_OVERSAMPLE = 4
 # "4x oversampled ESF" -- specified directly in the Wave 2B task prompt,
 # and the traditional ISO 12233 e-SFR oversample factor (each of the ~10-20
@@ -396,6 +432,31 @@ PSF_WINDOW_RADIUS_PX = 15
 # moments around its centroid -- wide enough to include a lens's coma wing
 # a few px out from the core, narrow enough that two stars closer than
 # ~30px don't contaminate each other's moment sums in a typical field test.
+
+PSF_MOMENT_WINDOW_SIGMAS = 3.0
+PSF_MOMENT_WINDOW_MIN_PX = 4
+PSF_MOMENT_WINDOW_ITERATIONS = 2
+PSF_BACKGROUND_ANNULUS_FACTOR = 1.6
+# After a first pass in the full PSF_WINDOW_RADIUS_PX window, the moments
+# are re-measured in a window sized to this many times the blob's own
+# measured sigma_major (floored at PSF_MOMENT_WINDOW_MIN_PX, capped at
+# PSF_WINDOW_RADIUS_PX), with the background taken from an annulus outside
+# that window rather than as the median of the window itself.
+#
+# A fixed window over-weights the far corners: the moment sums are
+# r^2-weighted, so positive noise excursions 15 px out from a 2 px blob
+# carry ~56x the leverage of the same excursion at the core, and the
+# window's own median under-estimates the background when the blob fills
+# a good part of it. Measured on synthetic stars (truth in plane px,
+# sigma_major/sigma_minor):
+#
+#   truth 2.0/1.0  fixed window 2.053/1.126  ->  iterated 1.995/1.003
+#   truth 3.0/2.0  fixed window 2.997/2.004  ->  iterated 2.992/1.999
+#   truth 5.0/5.0  fixed window 4.282/4.279  ->  iterated 4.946/4.937
+#
+# i.e. the fixed window reads a small star ~13% too round and a large one
+# ~14% too small. 3 sigma captures 99.7% of a Gaussian's flux along each
+# axis while keeping the window clear of a neighbour ~2x further out.
 
 PSF_SATURATION_FRACTION = 0.995
 # Second bug hunt: a saturated star's core is clipped flat, which biases

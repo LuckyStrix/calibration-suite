@@ -21,8 +21,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
+
 from calsuite import config, devices as devicesmod, raw as rawmod, store
-from calsuite.lens.constants import DISPLAY_SQUARE_MM
+from calsuite.lens.constants import DISPLAY_SQUARE_MM, R100_PIXEL_PITCH_MM as LENS_R100_PIXEL_PITCH_MM
 
 # charuco/distortion/tca/flats/mtf/psf/export_lensfun/report are each
 # imported locally, inside the one `_cmd_*` function that uses them --
@@ -203,7 +205,18 @@ def _cmd_flats(args) -> int:
         print(str(exc))
         return 1
 
-    planes = [rawmod.planes(f)["G1"] for f in frames]  # green plane: highest sample density
+    # Black-subtracted, per channel (raw.black_level_by_channel): the joint
+    # V x S model `self_calibrate_flat` fits is *multiplicative* -- it works
+    # on log(V . S) -- so an additive black pedestal isn't absorbed anywhere,
+    # it flattens the recovered falloff. With a realistic 2048 DN pedestal
+    # and ~3000 DN of signal, a true corner vignetting of V=0.741 came back
+    # as 0.846 and the exported lensfun k1 was 40% low. The function's own
+    # docstring asks for "already black-subtracted and positive" input; the
+    # tests did the subtraction themselves, so only this caller skipped it.
+    planes = []  # green plane: highest sample density
+    for f in frames:
+        black = rawmod.black_level_by_channel(f)["G1"]
+        planes.append(np.clip(rawmod.planes(f)["G1"] - black, 1.0, None))
     analysis = flatsmod.self_calibrate_flat(planes, poses)
 
     conditions = {"focal_mm": frames[0].meta.focal, "aperture": args.aperture}
@@ -251,7 +264,9 @@ def _cmd_mtf(args) -> int:
     camera_ref, lens_ref = _device_refs(frames)
     plane = rawmod.planes(frames[0])["G1"]
     grid = tuple(int(v) for v in args.grid.split("x"))
-    analysis = mtfmod.mtf_field_grid(plane, grid=grid, saturation_dn=frames[0].white_level)
+    analysis = mtfmod.mtf_field_grid(
+        plane, grid=grid, saturation_dn=frames[0].white_level, pixel_pitch_mm=args.pixel_pitch_mm
+    )
 
     conditions = {"focal_mm": frames[0].meta.focal, "aperture": frames[0].meta.aperture}
     record = store.Record.from_analysis(
@@ -260,7 +275,7 @@ def _cmd_mtf(args) -> int:
         devices=[camera_ref.to_dict()],
         analysis=analysis,
         provenance="measured",
-        method=_method("mtf.mtf_field_grid", {"grid": args.grid}),
+        method=_method("mtf.mtf_field_grid", {"grid": args.grid, "pixel_pitch_mm": args.pixel_pitch_mm}),
         inputs=[{"name": Path(frames[0].path).name, "sha256": frames[0].sha256}],
         conditions=conditions,
     )
@@ -399,6 +414,12 @@ def register(subparsers) -> None:
     mtf_p = sub.add_parser("mtf", help="slanted-edge e-SFR field grid")
     mtf_p.add_argument("--from", dest="from_dir", type=Path, required=True)
     mtf_p.add_argument("--grid", type=str, default="3x5")
+    mtf_p.add_argument(
+        "--pixel-pitch-mm",
+        type=float,
+        default=LENS_R100_PIXEL_PITCH_MM,
+        help="sensor pixel pitch in mm, for the cycles/px -> lp/mm conversion (default: the R100's)",
+    )
     mtf_p.set_defaults(func=_cmd_mtf)
 
     psf_p = sub.add_parser("psf", help="star/pinhole PSF field map")

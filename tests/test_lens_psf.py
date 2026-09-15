@@ -114,3 +114,53 @@ def test_sagittal_vs_meridional_classification():
     # major axis perpendicular to the radial direction -> meridional
     out2 = P.classify_orientation(orientation_deg=90.0, x=150.0, y=100.0, center=center)
     assert out2["orientation"] == "meridional"
+
+
+def test_moments_are_not_biased_by_a_window_much_wider_than_the_blob():
+    """The moment sums are r^2-weighted, so a fixed 15 px window around a
+    2 px blob gives noise in its far corners ~56x the leverage it has at
+    the core, and the window's own median over-estimates the background.
+    A truth-2.0/1.0 plane-px star measured 2.05/1.13 -- 13% too round, and
+    outside this module's own 15% tolerance on sigma_minor. The window is
+    now iterated down to the blob's own size with an annulus background.
+    """
+    model = synth_sensor.SensorModel(
+        shape=(240, 320), read_noise_e=1.0, gain_e_per_dn=2.0, black_dn=100.0,
+        prnu_std=0.0, dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0, full_well_e=2_000_000,
+    )
+    rng = np.random.default_rng(3)
+    # sigma in *sensor* px; one plane px spans two of them.
+    frame = synthlens.render_stars(
+        model,
+        [{"x": 160.0, "y": 120.0, "amplitude": 8.0e4, "sigma_major": 4.0, "sigma_minor": 2.0, "theta_deg": 40.0}],
+        rng=rng, exposure_s=0.3, background_flux_e_per_s=20.0,
+    )
+    plane = rawmod.planes(frame)["G1"]
+
+    m = P.moments(plane, 80.0, 60.0)
+    assert m["sigma_major"] == pytest.approx(2.0, rel=0.03)
+    assert m["sigma_minor"] == pytest.approx(1.0, rel=0.03)
+    assert m["ellipticity"] == pytest.approx(0.5, abs=0.03)
+    # The window it actually used is reported, and it is far tighter than
+    # the PSF_WINDOW_RADIUS_PX default.
+    assert m["window_px"] < 15
+    assert m["window_truncated"] is False
+
+
+def test_moments_flag_a_blob_wider_than_the_window():
+    """A blob whose wings run past even the full window has sigmas biased
+    *low* by the truncation. That is reported rather than left for a reader
+    to discover."""
+    model = synth_sensor.SensorModel(
+        shape=(240, 320), read_noise_e=1.0, gain_e_per_dn=2.0, black_dn=100.0,
+        prnu_std=0.0, dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0, full_well_e=2_000_000,
+    )
+    rng = np.random.default_rng(3)
+    frame = synthlens.render_stars(
+        model,
+        [{"x": 160.0, "y": 120.0, "amplitude": 8.0e4, "sigma_major": 20.0, "sigma_minor": 8.0, "theta_deg": 40.0}],
+        rng=rng, exposure_s=0.3, background_flux_e_per_s=20.0,
+    )
+    m = P.moments(rawmod.planes(frame)["G1"], 80.0, 60.0)
+    assert m["window_truncated"] is True
+    assert m["sigma_major"] < 10.0  # truth is 10 plane px; truncation reads low

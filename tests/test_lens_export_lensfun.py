@@ -98,10 +98,28 @@ def test_compare_with_vendor_reads_mil_canon_if_present():
     comparison = E.compare_with_vendor({"a": 0.002, "b": -0.009, "c": 0.014}, system_xml_path=system_path)
     assert comparison["available"] is True
     assert comparison["provenance"] == "vendor"
-    # the Wave 2B task prompt's own "facts checked": a=0.002 b=-0.009 c=0.014
-    assert comparison["distortion_diff"]["a"] == pytest.approx(0.0, abs=1e-6)
-    assert comparison["distortion_diff"]["b"] == pytest.approx(0.0, abs=1e-6)
-    assert comparison["distortion_diff"]["c"] == pytest.approx(0.0, abs=1e-6)
+
+    # The vendor RF 50 entry is calibrated at cropfactor 1.0 and this suite
+    # calibrates on the R100 (1.613). lensfun rescales the normalized radius
+    # by the ratio of the two, and ptlens's a/b/c multiply r^3/r^2/r, so the
+    # ratio enters as lambda^3/lambda^2/lambda term by term: subtracting the
+    # two coefficient sets differences two different quantities. The
+    # comparison says so instead of printing a difference that reads as
+    # physical.
+    assert comparison["vendor_cropfactor"] == pytest.approx(1.0)
+    assert comparison["our_cropfactor"] == pytest.approx(1.613, abs=0.01)
+    assert comparison["distortion_diff"] is None
+    assert "cropfactor" in comparison["distortion_diff_unavailable"]
+
+    # Like for like (a fit that really was made on a full-frame body), the
+    # difference is computed as before -- the Wave 2B task prompt's own
+    # "facts checked" values: a=0.002 b=-0.009 c=0.014.
+    same_body = E.compare_with_vendor(
+        {"a": 0.002, "b": -0.009, "c": 0.014}, system_xml_path=system_path, our_cropfactor=1.0
+    )
+    assert same_body["distortion_diff"]["a"] == pytest.approx(0.0, abs=1e-6)
+    assert same_body["distortion_diff"]["b"] == pytest.approx(0.0, abs=1e-6)
+    assert same_body["distortion_diff"]["c"] == pytest.approx(0.0, abs=1e-6)
 
 
 def test_compare_with_vendor_reports_unavailable_for_missing_file(tmp_path):

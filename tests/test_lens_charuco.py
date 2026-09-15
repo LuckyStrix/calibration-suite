@@ -17,16 +17,20 @@ def test_plane_to_sensor_maps_plane_px_times_two_plus_offset():
     model = synth_sensor.SensorModel(shape=(40, 60), top_margin=6, left_margin=10)
     rng = np.random.default_rng(0)
     frame = synth_sensor.frame(model, exposure_s=0.01, flux_e_per_s=1000.0, temp_c=20.0, rng=rng)
-    # a corner reported at plane px (3, 4) for each named plane should map to
-    # cfa row/col = visible_origin + 2*plane_px + that plane's own phase offset.
+    # A corner reported at plane px (3, 4) for each named plane maps to
+    # 2*plane_px + that plane's own phase offset, in **visible-area** sensor
+    # pixels -- the frame of reference `image_size_from_frame` (and so
+    # `tca.fit_tca`'s and `distortion.coverage_grid`'s optical center) uses.
+    # Adding the visible origin here, as this once did, put the corners in
+    # full-CFA coordinates while the image size stayed visible-sized, moving
+    # the assumed center by the sensor's margins.
     corners = np.array([[4.0, 3.0]])  # (x, y) = (col, row) in plane px
+    assert frame.visible[0].start > 0 and frame.visible[1].start > 0  # margins really are non-zero
     for name in ("R", "G1", "G2", "B"):
         mapped = charuco.plane_to_sensor(frame, corners, name)
         dr, dc = charuco._plane_offsets(frame.pattern)[name]
-        expected_col = frame.visible[1].start + 4 * 2 + dc
-        expected_row = frame.visible[0].start + 3 * 2 + dr
-        assert mapped[0, 0] == expected_col
-        assert mapped[0, 1] == expected_row
+        assert mapped[0, 0] == 4 * 2 + dc
+        assert mapped[0, 1] == 3 * 2 + dr
 
 
 def test_to_8bit_normalizes_and_clips():

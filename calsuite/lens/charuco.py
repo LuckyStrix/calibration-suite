@@ -81,14 +81,30 @@ def _plane_offsets(pattern: str) -> dict:
 
 
 def plane_to_sensor(frame, corners_xy: np.ndarray, plane_name: str) -> np.ndarray:
-    """Map ``(N, 2)`` plane-pixel ``(x, y)`` corners to full-sensor pixel
-    coordinates: ``plane_px * 2 + cfa_offset`` (Wave 2B task prompt), plus
-    the visible area's own top-left origin."""
+    """Map ``(N, 2)`` plane-pixel ``(x, y)`` corners to sensor pixel
+    coordinates *within the visible area*: ``plane_px * 2 + cfa_offset``
+    (Wave 2B task prompt), where the offset is the plane's own phase inside
+    the 2x2 tile.
+
+    Visible-area, not absolute-CFA: ``raw.planes`` slices the visible area,
+    and every consumer of these coordinates measures them against
+    ``image_size_from_frame``, which is the visible size. Adding the visible
+    origin here (as this used to) left the corners in full-CFA coordinates
+    while the image size stayed visible-sized, so ``tca.fit_tca`` and
+    ``distortion.coverage_grid`` both took the optical center to be
+    ``((w-1)/2, (h-1)/2)`` of the *visible* frame while reading corners
+    offset by the margins -- 288 px left and 56 px above the real center on
+    this project's own synthetic sensor. On noise-free data that turned a
+    pure radial TCA scale of 1.000400 into a measured 1.000390 with 0.09 px
+    of "residual", and skewed the coverage histogram the distortion
+    refusal reads (387 vs 790 corners in opposite sectors under uniform
+    coverage). No test caught it because both analyses' own tests build
+    corners directly in visible-relative coordinates and never call this.
+    """
     dr, dc = _plane_offsets(frame.pattern)[plane_name]
-    row0, col0 = frame.visible[0].start, frame.visible[1].start
     out = np.empty_like(corners_xy, dtype=np.float64)
-    out[:, 0] = corners_xy[:, 0] * 2.0 + col0 + dc  # x <-> column
-    out[:, 1] = corners_xy[:, 1] * 2.0 + row0 + dr  # y <-> row
+    out[:, 0] = corners_xy[:, 0] * 2.0 + dc  # x <-> column
+    out[:, 1] = corners_xy[:, 1] * 2.0 + dr  # y <-> row
     return out
 
 

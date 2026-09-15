@@ -137,3 +137,38 @@ def test_field_grid_reports_map_and_per_cell_refusals():
     grid = analysis.result["mtf50_cycles_per_sensor_px_map"]
     assert len(grid) == 3 and len(grid[0]) == 5
     assert analysis.result["n_cells_ok"] > 0
+
+
+@pytest.mark.parametrize("sigma_px", [1.0, 2.0, 4.0])
+def test_mtf50_tracks_the_analytic_edge_across_sharpness(sigma_px):
+    """The single-sigma test above sits at 0.75 plane px, the one regime
+    where the old fixed-span Hamming window's bias vanishes. A window that
+    spans a fixed number of bins however wide the LSF is *narrows* the LSF,
+    and a narrower LSF is a higher MTF50 -- +7.3% at sigma = 2 plane px
+    (the soft field corners the 3x5 grid exists to characterize), i.e.
+    biased toward better sharpness exactly where it matters. The window is
+    now flat-topped and scaled to the LSF's own width; 3% holds across a
+    4x range of edge widths.
+    """
+    rng = np.random.default_rng(11)
+    plane = _plane(5.0, sigma_px, rng, low_flux_e_per_s=2.0e3, high_flux_e_per_s=8.0e4)
+    analysis = M.edge_sfr(plane)
+    assert analysis.ok, analysis.refusals
+
+    f_analytic = math.sqrt(math.log(2) / (2 * math.pi**2 * sigma_px**2))  # cycles/sensor-px
+    assert analysis.result["mtf50_cycles_per_sensor_px"] == pytest.approx(f_analytic, rel=0.03)
+
+
+def test_refuses_when_the_mtf_never_reaches_50_percent():
+    """`_mtf50` used to return the last frequency bin when the curve never
+    crossed 0.5 -- the top of the transform's own axis (oversample/2 = 2
+    cycles/plane-px) reported as a measurement, with status="ok". There is
+    no MTF50 in that data.
+    """
+    freqs = np.linspace(0.0, 2.0, 50)
+    mtf = np.full_like(freqs, 0.9)  # never falls to 0.5
+    assert M._mtf50(freqs, mtf) is None
+
+    # ...and a crossing that does exist is still interpolated as before.
+    mtf = np.linspace(1.0, 0.0, 50)
+    assert M._mtf50(freqs, mtf) == pytest.approx(1.0, abs=0.05)

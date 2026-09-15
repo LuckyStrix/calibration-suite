@@ -17,6 +17,8 @@ from calsuite.lens.constants import (
     MTF_EDGE_MAX_ANGLE_DEG,
     MTF_EDGE_MIN_ANGLE_DEG,
     MTF_FIELD_GRID,
+    MTF_LSF_WINDOW_FLAT_FRACTION,
+    MTF_LSF_WINDOW_SIGMAS,
     MTF_MIN_CONTRAST,
     MTF_MIN_ROWS,
     MTF_OVERSAMPLE,
@@ -80,10 +82,53 @@ def _oversampled_esf(roi: np.ndarray, positions: np.ndarray, oversample: int, wi
     return esf
 
 
-def _mtf50(freqs: np.ndarray, mtf: np.ndarray) -> float:
+def _lsf_window(
+    lsf: np.ndarray,
+    sigmas: float = MTF_LSF_WINDOW_SIGMAS,
+    flat_fraction: float = MTF_LSF_WINDOW_FLAT_FRACTION,
+) -> np.ndarray:
+    """A flat-topped (Tukey) window centered on the LSF's own centroid and
+    scaled to its own width: unity out to ``flat_fraction * sigmas`` times
+    the LSF's second-moment sigma, raised-cosine taper to zero by
+    ``sigmas``, zero beyond.
+
+    Not ``np.hamming(lsf.size)``, which this used to be: that is centered
+    on the middle of the array, spans a *fixed* 2*window_px*oversample bins
+    however wide the LSF actually is, and tapers from its own center -- so
+    it narrows the LSF, and a narrower LSF is a higher MTF50. Against an
+    analytic erf edge it read +7.3% high at sigma = 2 plane px, biased
+    toward *better* sharpness exactly at the soft field corners the field
+    grid exists to characterize. MTF_LSF_WINDOW_SIGMAS carries the full
+    comparison.
+    """
+    x = np.arange(lsf.size, dtype=np.float64)
+    weight = np.abs(lsf)
+    total = float(weight.sum())
+    if total <= 0:
+        return np.hamming(lsf.size)
+    centroid = float((weight * x).sum() / total)
+    sigma = float(np.sqrt(max((weight * (x - centroid) ** 2).sum() / total, 1e-12)))
+    half = sigmas * sigma
+    if not np.isfinite(half) or half <= 1.0:
+        return np.hamming(lsf.size)
+    u = np.abs(x - centroid) / half  # 0 at the centroid, 1 at the window edge
+    window = np.ones_like(u)
+    taper = (u > flat_fraction) & (u <= 1.0)
+    window[taper] = 0.5 * (1.0 + np.cos(np.pi * (u[taper] - flat_fraction) / (1.0 - flat_fraction)))
+    window[u > 1.0] = 0.0
+    return window
+
+
+def _mtf50(freqs: np.ndarray, mtf: np.ndarray) -> float | None:
     below = np.where(mtf <= 0.5)[0]
     if below.size == 0:
-        return float(freqs[-1])
+        # No 50% crossing inside the measured band. Returning the last bin
+        # (as this used to) reports the top of the transform's own
+        # frequency axis -- oversample/2 = 2 cycles/plane-px -- as if it
+        # were a measurement: a 0.1-sensor-px-sigma edge came back as
+        # "178 lp/mm" on a sensor whose own Nyquist is 135, with
+        # status="ok". There is no MTF50 in this data; say so.
+        return None
     i = int(below[0])
     if i == 0:
         return float(freqs[0])
@@ -92,7 +137,13 @@ def _mtf50(freqs: np.ndarray, mtf: np.ndarray) -> float:
     return float(f0 + frac * (f1 - f0))
 
 
-def edge_sfr(roi: np.ndarray, *, oversample: int = MTF_OVERSAMPLE, saturation_dn: float | None = None) -> Analysis:
+def edge_sfr(
+    roi: np.ndarray,
+    *,
+    oversample: int = MTF_OVERSAMPLE,
+    saturation_dn: float | None = None,
+    pixel_pitch_mm: float = R100_PIXEL_PITCH_MM,
+) -> Analysis:
     """One ROI's e-SFR/MTF. ``roi`` is a single-plane 2D array (plane px,
     e.g. one cell of ``mtf_field_grid``'s grid) whose columns cross a
     single slanted edge in every row. ``saturation_dn``, when given (the
@@ -150,7 +201,7 @@ def edge_sfr(roi: np.ndarray, *, oversample: int = MTF_OVERSAMPLE, saturation_dn
 
     esf = _oversampled_esf(roi, positions, oversample)
     lsf = np.diff(esf)
-    lsf = lsf * np.hamming(lsf.size)
+    lsf = lsf * _lsf_window(lsf)
     spectrum = np.abs(np.fft.rfft(lsf))
     if spectrum[0] == 0:
         a.refuse("zero_dc", "LSF spectrum has zero DC component", 0.0, None)
@@ -159,8 +210,21 @@ def edge_sfr(roi: np.ndarray, *, oversample: int = MTF_OVERSAMPLE, saturation_dn
     freqs = np.fft.rfftfreq(lsf.size, d=1.0 / oversample)  # cycles per plane-px directly
 
     mtf50_plane = _mtf50(freqs, mtf)
+    if mtf50_plane is None:
+        a.refuse(
+            "mtf50_not_resolved",
+            f"the MTF never falls to 0.5 within the measured band (up to {freqs[-1]:.2f} cycles/plane-px) -- "
+            "there is no MTF50 in this ROI to report",
+            None,
+            0.5,
+        )
+        a.residuals = {
+            "freq_cycles_per_plane_px": [float(f) for f in freqs],
+            "mtf": [float(m) for m in mtf],
+        }
+        return a
     mtf50_sensor = mtf50_plane * 0.5  # a plane px spans 2 sensor px (Wave 2B task prompt)
-    lp_per_mm = mtf50_sensor / R100_PIXEL_PITCH_MM
+    lp_per_mm = mtf50_sensor / pixel_pitch_mm
 
     a.result = {
         "angle_deg": angle_deg,
@@ -168,6 +232,10 @@ def edge_sfr(roi: np.ndarray, *, oversample: int = MTF_OVERSAMPLE, saturation_dn
         "mtf50_cycles_per_plane_px": mtf50_plane,
         "mtf50_cycles_per_sensor_px": mtf50_sensor,
         "mtf50_lp_per_mm": lp_per_mm,
+        # Carried so a reader can tell which sensor's geometry turned
+        # cycles/px into lp/mm: it defaults to the R100's pitch, and a frame
+        # from any other body needs its own (`lens mtf --pixel-pitch-mm`).
+        "pixel_pitch_mm": float(pixel_pitch_mm),
     }
     a.residuals = {
         "freq_cycles_per_plane_px": [float(f) for f in freqs],
@@ -182,6 +250,7 @@ def mtf_field_grid(
     grid: tuple = MTF_FIELD_GRID,
     oversample: int = MTF_OVERSAMPLE,
     saturation_dn: float | None = None,
+    pixel_pitch_mm: float = R100_PIXEL_PITCH_MM,
 ) -> Analysis:
     """Split ``plane`` into a ``grid = (rows, cols)`` field grid (default
     3x5, docs/design.md §4.4's "5x3 field grid"), run ``edge_sfr`` on each
@@ -203,7 +272,9 @@ def mtf_field_grid(
     for i in range(n_rows):
         for j in range(n_cols):
             roi = plane[i * cell_h : (i + 1) * cell_h, j * cell_w : (j + 1) * cell_w]
-            cell_analysis = edge_sfr(roi, oversample=oversample, saturation_dn=saturation_dn)
+            cell_analysis = edge_sfr(
+                roi, oversample=oversample, saturation_dn=saturation_dn, pixel_pitch_mm=pixel_pitch_mm
+            )
             if cell_analysis.ok:
                 n_ok += 1
                 mtf50_map[i][j] = cell_analysis.result["mtf50_cycles_per_sensor_px"]
@@ -221,6 +292,7 @@ def mtf_field_grid(
         "mtf50_lp_per_mm_map": lp_map,
         "n_cells_ok": n_ok,
         "n_cells_total": n_rows * n_cols,
+        "pixel_pitch_mm": float(pixel_pitch_mm),
     }
     a.residuals = {"cell_refusals": cell_refusals}
     return a

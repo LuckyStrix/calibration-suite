@@ -24,14 +24,14 @@ def _device() -> dict:
     return {"kind": "lens", "model": "Test Lens 50mm", "id": "test-lens-50mm-unknown", "firmware": ""}
 
 
-def _write_flats_capture(tmp_path):
+def _write_flats_capture(tmp_path, *, black_dn=100.0):
     """A small (but non-degenerate -- angle+shift poses, per
     lens/flats.py's condition-number check) self-calibrating-flat session,
     written as ``.npz`` so ``lens/commands.py``'s real ``--from DIR`` path
     (``_RAW_EXTENSIONS``) reads it exactly like a folder of real captures.
     Mirrors ``demo.py::_run_lens``'s own flats session."""
     model = synth_sensor.SensorModel(
-        shape=(180, 240), read_noise_e=2.0, gain_e_per_dn=2.0, black_dn=100.0,
+        shape=(180, 240), read_noise_e=2.0, gain_e_per_dn=2.0, black_dn=black_dn,
         prnu_std=0.0, dsnu_std_e_per_s=0.0, hot_pixel_fraction=0.0, full_well_e=2_000_000,
     )
     poses = [
@@ -233,3 +233,32 @@ def test_lens_report_includes_vignetting_section_for_a_saved_flats_record(tmp_pa
     assert rc == 0
     html = out_path.read_text(encoding="utf-8")
     assert "Vignetting" in html
+
+
+def test_lens_flats_subtracts_the_black_pedestal_before_fitting(tmp_path, monkeypatch):
+    """`self_calibrate_flat` fits a *multiplicative* model (it works on
+    log(V . S)), so a black pedestal is not absorbed anywhere -- it flattens
+    the recovered falloff. `_cmd_flats` handed it `raw.planes(f)["G1"]`
+    straight, in defiance of that function's own "already black-subtracted
+    and positive" contract; with a realistic 2048 DN pedestal on ~3000 DN of
+    signal, a true corner V of 0.741 came back as 0.846 and the exported
+    lensfun k1 was 40% low. `test_lens_flats.py` never saw it because its
+    own `_render` does the subtraction the command was skipping, and the
+    session here uses the synthetic sensor's default 100 DN, small enough to
+    hide it.
+    """
+    monkeypatch.setenv("CALSUITE_RECORDS", str(tmp_path / "records"))
+    folder, poses_str = _write_flats_capture(tmp_path, black_dn=2048.0)
+
+    rc = cli.main(["lens", "flats", "--from", str(folder), "--aperture", "1.8", "--poses", poses_str])
+    assert rc == 0
+
+    st = store.Store(tmp_path / "records")
+    record = next(iter(st.all(kind="lens.flats")))
+    v_coeffs = record.result["v_coeffs"]
+    # The same ground truth _write_flats_capture renders with.
+    assert v_coeffs == pytest.approx([-0.35, 0.05], abs=0.03)
+
+    # Corner vignetting at r=1, the number that reaches the lensfun export.
+    corner = 1.0 + v_coeffs[0] + v_coeffs[1]
+    assert corner == pytest.approx(0.70, abs=0.03)  # un-subtracted, this read 0.85
