@@ -70,8 +70,13 @@ def _analyze_channel(points: list, white_level: float, black: float = 0.0) -> di
     # Linear range: the longest contiguous prefix (starting at the shortest
     # exposure) of unclipped points within LINEARITY_DEVIATION_PCT.
     linear_len = 0
+    break_reason, break_deviation_pct = None, None
     for i in range(len(points)):
-        if not unclipped_mask[i] or abs(deviation_pct[i]) > LINEARITY_DEVIATION_PCT:
+        if not unclipped_mask[i]:
+            break_reason = "clipped"
+            break
+        if abs(deviation_pct[i]) > LINEARITY_DEVIATION_PCT:
+            break_reason, break_deviation_pct = "deviation", float(deviation_pct[i])
             break
         linear_len = i + 1
 
@@ -80,6 +85,15 @@ def _analyze_channel(points: list, white_level: float, black: float = 0.0) -> di
     return {
         "n_points": len(points),
         "n_clipped": n_clipped,
+        # Why the linear prefix stopped where it did, and (for a deviation
+        # break) by how much the first point outside it missed. Without
+        # these, a channel whose *every* point is clipped refused with
+        # "max_deviation_pct_in_range = 0.0 against a 2.0% threshold" --
+        # the slope is 0, so every prediction is 0, so `np.where` forces
+        # every deviation to 0, and the range is empty so the max is over
+        # nothing. The refusal read as "0% deviation failed a 2% tolerance".
+        "linear_range_break_reason": break_reason,
+        "linear_range_break_deviation_pct": break_deviation_pct,
         "flux_rate_dn_per_s": slope,
         "exposure_s": exposures.tolist(),
         "mean_dn": means.tolist(),
@@ -129,13 +143,33 @@ def analyze_linearity(frames: list, black_dn, gain_e_per_dn=None) -> Analysis:
             result["full_well_e"] = (result["saturation_dn"] - _black_for(black_dn, ch)) * gain
         channels_result[ch] = result
         if result["linear_range_n_points"] == 0:
-            a.refuse(
-                "no_linear_range",
-                f"channel {ch}: no prefix of points stayed within {LINEARITY_DEVIATION_PCT}% of the "
-                "baseline slope",
-                value=result["max_deviation_pct_in_range"],
-                threshold=LINEARITY_DEVIATION_PCT,
-            )
+            if result["n_clipped"] == result["n_points"]:
+                # A distinct condition with a distinct cause: there is no
+                # baseline to deviate from, because nothing is unclipped.
+                a.refuse(
+                    "all_points_clipped",
+                    f"channel {ch}: all {result['n_points']} exposure steps are at or above "
+                    f"{LINEARITY_CLIP_FRACTION:.0%} of the black-subtracted saturation level, so no baseline "
+                    "slope could be fit at all -- re-shoot with shorter exposures or less light",
+                    value=result["n_clipped"],
+                    threshold=result["n_points"],
+                )
+            elif result["linear_range_break_reason"] == "clipped":
+                a.refuse(
+                    "no_linear_range",
+                    f"channel {ch}: the shortest exposure is already clipped, so the linear range is empty",
+                    value=result["n_clipped"],
+                    threshold=0,
+                )
+            else:
+                a.refuse(
+                    "no_linear_range",
+                    f"channel {ch}: no prefix of points stayed within {LINEARITY_DEVIATION_PCT}% of the "
+                    f"baseline slope (the first point is off by "
+                    f"{result['linear_range_break_deviation_pct']:.2f}%)",
+                    value=abs(result["linear_range_break_deviation_pct"]),
+                    threshold=LINEARITY_DEVIATION_PCT,
+                )
 
     a.result = {"channels": channels_result, "deviation_threshold_pct": LINEARITY_DEVIATION_PCT}
     a.residuals = {ch: channels_result[ch]["deviation_pct"] for ch in CHANNELS}

@@ -208,10 +208,15 @@ def render_sensor_report(
         None,
     )
     provenance = primary.provenance if primary else "nominal"
-    status = primary.status if primary else "ok"
+    records = [r for r in (bias_record, ptc_record, linearity_record, darks_record, iso_record, shutter_record) if r]
+    # The page's status is pooled over *every* record shown on it, the same
+    # way the refusals below are. Taking it from `primary` alone badged a
+    # page "ok" while listing another record's refusals right underneath --
+    # e.g. camera.ptc passed but camera.darks and camera.iso refused.
+    status = "refused" if any(r.status == "refused" for r in records) else (primary.status if primary else "ok")
     refusals = list(primary.refusals) if primary else []
-    for r in (bias_record, ptc_record, linearity_record, darks_record, iso_record, shutter_record):
-        if r is not None and r is not primary:
+    for r in records:
+        if r is not primary:
             refusals.extend(r.refusals)
 
     recommended_iso = iso_record.result.get("recommended_iso") if iso_record else None

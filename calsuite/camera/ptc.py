@@ -120,17 +120,31 @@ def _fit_channel(points: list, channel_refusals: list) -> dict | None:
         return None
 
     gain_e_per_dn = 1.0 / slope
-    read_noise_dn2 = max(intercept, 0.0)
-    read_noise_dn = float(np.sqrt(read_noise_dn2))
-    read_noise_e = read_noise_dn * gain_e_per_dn
+
+    # The read noise is this fit's *intercept* -- an extrapolation to zero
+    # signal from points spread over ~1.5 decades, in an unweighted OLS over
+    # heteroscedastic variance estimates. Its own standard error is
+    # routinely as large as the intercept itself, and a negative intercept
+    # is an unphysical result that says the extrapolation failed, not that
+    # the sensor has no read noise. Clamping it to zero (as this used to,
+    # `max(intercept, 0.0)`) published "read noise = 0.000 electrons" with
+    # no uncertainty and status ok -- on clean synthetic data at a true 3.0
+    # e-, 11 of 32 channel fits did exactly that. `camera.bias` measures the
+    # same quantity directly, to ~5%, from a difference pair; when this fit
+    # can't resolve it, say so and let the bias record be the source.
+    intercept_resolved = intercept > 0 and fit.intercept_stderr is not None and fit.intercept_stderr < intercept
+    if intercept_resolved:
+        read_noise_dn = float(np.sqrt(intercept))
+        read_noise_e = read_noise_dn * gain_e_per_dn
+        # read_noise_dn = sqrt(intercept) -> d(rn)/rn = 0.5 * d(intercept)/intercept.
+        rn_rel_err = 0.5 * abs(fit.intercept_stderr / intercept)
+    else:
+        read_noise_dn = None
+        read_noise_e = None
+        rn_rel_err = float("nan")
 
     # Relative-error propagation: gain = 1/slope -> d(gain)/gain = d(slope)/slope.
     gain_rel_err = abs(fit.stderr / slope) if slope else float("nan")
-    # read_noise_dn = sqrt(intercept) -> d(rn)/rn = 0.5 * d(intercept)/intercept.
-    if intercept > 0 and fit.intercept_stderr is not None:
-        rn_rel_err = 0.5 * abs(fit.intercept_stderr / intercept)
-    else:
-        rn_rel_err = float("nan")
 
     predicted = slope * x + intercept
     residuals = (y - predicted).tolist()
@@ -139,6 +153,11 @@ def _fit_channel(points: list, channel_refusals: list) -> dict | None:
         "gain_e_per_dn": gain_e_per_dn,
         "read_noise_dn": read_noise_dn,
         "read_noise_e": read_noise_e,
+        # None above means the PTC intercept couldn't resolve read noise
+        # (non-positive, or its own stderr as large as itself). The raw
+        # intercept is kept so a reader can see what the fit actually did.
+        "read_noise_resolved": bool(intercept_resolved),
+        "read_noise_intercept_dn2": float(intercept),
         "gain_uncertainty_e_per_dn": gain_e_per_dn * gain_rel_err if gain_rel_err == gain_rel_err else None,
         "read_noise_uncertainty_e": read_noise_e * rn_rel_err if rn_rel_err == rn_rel_err else None,
         "r_value": fit.rvalue,

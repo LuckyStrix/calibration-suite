@@ -15,7 +15,7 @@ import numpy as np
 
 from calsuite.raw import FrameMeta, RawFrame
 
-DARK_CURRENT_DOUBLING_C = 6.0
+from calsuite.camera.constants import DARK_CURRENT_REFERENCE_DOUBLING_C as DARK_CURRENT_DOUBLING_C
 # Silicon dark current roughly doubles every ~6-7C near room temperature --
 # a standard rule of thumb (docs/design.md §3.1's dark-current-vs-temperature
 # row). Used here only to shape the synthetic dark current's temperature

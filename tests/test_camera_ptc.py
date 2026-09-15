@@ -57,10 +57,15 @@ def test_gain_and_read_noise_recovered_within_design_budget():
     for _ch, data in a.result["channels"].items():
         fit = data["fit"]
         assert fit["gain_e_per_dn"] == pytest.approx(gain, rel=0.03)
-        # Clamped at 0 rather than negative when the noisy intercept dips
-        # below zero (see the comment above) -- still a valid outcome, not
-        # a bug, so this only bounds the upper side.
-        assert 0 <= fit["read_noise_e"] < read_noise_e * 3
+        # The intercept either resolves read noise or it doesn't. It used
+        # to be clamped with `max(intercept, 0.0)`, which turned a negative
+        # intercept -- an unphysical result meaning the extrapolation
+        # failed -- into a confident "0.000 electrons" with no uncertainty
+        # and status ok, on 11 of 32 channel fits of clean synthetic data.
+        if fit["read_noise_resolved"]:
+            assert 0 < fit["read_noise_e"] < read_noise_e * 3
+        else:
+            assert fit["read_noise_e"] is None and fit["read_noise_dn"] is None
 
 
 def test_gain_recovered_correctly_with_per_channel_black_dn():
@@ -82,7 +87,7 @@ def test_gain_recovered_correctly_with_per_channel_black_dn():
     for _ch, data in a.result["channels"].items():
         fit = data["fit"]
         assert fit["gain_e_per_dn"] == pytest.approx(gain, rel=0.03)
-        assert 0 <= fit["read_noise_e"] < read_noise_e * 3
+        assert fit["read_noise_e"] is None or 0 < fit["read_noise_e"] < read_noise_e * 3
 
 
 def test_refuses_with_too_few_levels():
@@ -255,7 +260,13 @@ def test_black_offset_invariance():
     for ch in ptc.CHANNELS:
         f1, f2 = a1.result["channels"][ch]["fit"], a2.result["channels"][ch]["fit"]
         assert f1["gain_e_per_dn"] == pytest.approx(f2["gain_e_per_dn"], rel=1e-9)
-        assert f1["read_noise_e"] == pytest.approx(f2["read_noise_e"], rel=1e-6)
+        # The intercept moves with a wrong black level, so this is the half
+        # of the test that can actually fail -- compare it when the fit
+        # resolved it, and compare the raw intercept itself either way.
+        assert f1["read_noise_resolved"] == f2["read_noise_resolved"]
+        assert f1["read_noise_intercept_dn2"] == pytest.approx(f2["read_noise_intercept_dn2"], rel=1e-6)
+        if f1["read_noise_resolved"]:
+            assert f1["read_noise_e"] == pytest.approx(f2["read_noise_e"], rel=1e-6)
 
 
 def test_narrow_shot_noise_region_does_not_fire_on_a_clean_line():

@@ -107,6 +107,35 @@ DARK_TEMP_BIN_WIDTH_C = 1.0
 # temperature rounds to the same whole degree C -- finer than that chases
 # sensor-temperature-sensor noise rather than a real ambient difference.
 
+FIXED_PATTERN_MIN_FRAMES = 3
+# A single frame can't distinguish "this pixel's fixed pattern" from "this
+# pixel's noise that frame" -- a handful of frames averaged brings the
+# per-pixel temporal noise down enough that what's left is dominated by the
+# pattern. Matches the order of magnitude used elsewhere in this area
+# (BIAS_MIN_FRAMES, DARK_MIN_EXPOSURES_PER_BIN). It does not bring that
+# noise to *zero*, which is what FIXED_PATTERN_DSNU_MIN_EXCESS is for.
+
+FIXED_PATTERN_DSNU_MIN_EXCESS = 0.10
+# Stacking N darks leaves a temporal-noise floor of var_temporal / N in the
+# stacked image, and the std of that image is what a naive DSNU figure
+# reports. With N = FIXED_PATTERN_MIN_FRAMES and a realistic 3 e- read
+# noise at gain 2, that floor alone is 1.5/sqrt(3) = 0.87 DN -- and a
+# measured "DSNU" of 0.89 DN came back identically whether the true DSNU
+# was 0.125 DN or exactly zero. The floor is subtracted in quadrature now,
+# and the remaining pattern variance must exceed this fraction of it before
+# a DSNU number is reported at all; below that the answer is "not resolved
+# by this many frames", not a number.
+
+DARK_CURRENT_REFERENCE_DOUBLING_C = 6.0
+# The temperature rise over which silicon's dark current roughly doubles --
+# the conventional 5-7 C rule of thumb for CMOS/CCD sensors, stated here as
+# the *reference* a measured doubling temperature is compared against, never
+# as a substitute for measuring one. It was previously imported into
+# `camera/darks.py` from `synth/sensor.py`, i.e. every real `camera.darks`
+# record carried a number out of the test generator; the generator now
+# imports it from here instead, so the synthetic sensor is calibrated to the
+# documented reference rather than the other way round.
+
 HOT_PIXEL_SIGMA_K = 6.0
 # A pixel counts as "hot" once it exceeds median + 6 * (1.4826 * MAD) of its
 # stacked-dark frame. For a Gaussian population, P(> 6 sigma) ~= 1e-9 --

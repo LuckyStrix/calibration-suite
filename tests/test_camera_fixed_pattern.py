@@ -1,6 +1,7 @@
 from dataclasses import replace
 
 import numpy as np
+import pytest
 
 from calsuite.camera import fixed_pattern
 from calsuite.synth import sensor as synth_sensor
@@ -156,3 +157,43 @@ def test_refuses_with_too_few_frames():
     )
     assert not a.ok
     assert a.refusals[0].check == "insufficient_frames"
+
+
+def _darks(dsnu_std_e_per_s, n=3, seed=1):
+    model = synth_sensor.SensorModel(
+        shape=(128, 128), read_noise_e=3.0, gain_e_per_dn=2.0, black_dn=512.0,
+        prnu_std=0.0, dsnu_std_e_per_s=dsnu_std_e_per_s, hot_pixel_fraction=0.0,
+        # High enough that the generator's `clip(dark_rate, 0, None)` doesn't
+        # truncate the injected spread -- this test is about the analysis,
+        # not about the generator's own floor.
+        dark_current_e_per_s_at_20c=20.0, full_well_e=200_000,
+    )
+    rng = np.random.default_rng(seed)
+    return [synth_sensor.frame(model, exposure_s=5.0, flux_e_per_s=0.0, temp_c=20.0, rng=rng) for _ in range(n)]
+
+
+def test_dsnu_subtracts_the_temporal_noise_floor_stacking_leaves_behind():
+    """Averaging N darks divides the per-pixel temporal noise *variance* by
+    N; it doesn't remove it. The std of the stacked image is therefore
+    sqrt(dsnu^2 + var_temporal/N), and reporting it directly -- as
+    `dsnu_std_dn` used to -- reports the floor: at N=3 with 3 e- read noise
+    and gain 2 it read ~0.89 DN whether the injected DSNU was 0.125 DN or
+    exactly zero.
+    """
+    # 2.0 e-/s of DSNU over a 5 s exposure at gain 2 is 5.0 DN of pattern.
+    stats = fixed_pattern.dsnu_stats(_darks(2.0), 512.0)["R"]
+    assert stats["resolved"] is True
+    assert stats["dsnu_std_dn"] == pytest.approx(5.0, rel=0.1)
+    # The raw (unsubtracted) figure the old code reported is visibly higher.
+    assert stats["observed_std_dn"] > stats["dsnu_std_dn"]
+    assert stats["temporal_floor_dn"] > 0
+
+
+def test_dsnu_refuses_to_report_a_pattern_it_cannot_see():
+    """With no DSNU at all, the stacked image still has the temporal floor
+    in it. The answer is "not resolved by this many frames", not a number
+    that happens to equal read_noise/sqrt(N)."""
+    stats = fixed_pattern.dsnu_stats(_darks(0.0), 512.0)["R"]
+    assert stats["resolved"] is False
+    assert stats["dsnu_std_dn"] is None
+    assert stats["observed_std_dn"] == pytest.approx(stats["temporal_floor_dn"], rel=0.1)

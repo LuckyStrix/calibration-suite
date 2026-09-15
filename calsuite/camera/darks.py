@@ -6,7 +6,8 @@ Dark current is fit per CFA channel: within each temperature bin, mean
 converted to e-/s via gain; across temperature bins, log2(dark rate) vs.
 temperature gives a doubling temperature (silicon dark current roughly
 doubles every few degrees C -- see synth/sensor.py's
-``DARK_CURRENT_DOUBLING_C``, which this fit is checked against in tests).
+``camera.constants.DARK_CURRENT_REFERENCE_DOUBLING_C``, which this fit is
+checked against in tests).
 
 Hot pixels are found on the raw (not per-channel-deinterleaved) visible
 pixel grid -- a hot photosite is a property of one physical pixel regardless
@@ -26,6 +27,7 @@ from scipy import stats
 from calsuite import raw as rawmod
 from calsuite.camera.constants import (
     DARK_MIN_EXPOSURES_PER_BIN,
+    DARK_CURRENT_REFERENCE_DOUBLING_C,
     DARK_MIN_TEMP_BINS,
     DARK_TEMP_BIN_WIDTH_C,
     HOT_PIXEL_SIGMA_K,
@@ -34,7 +36,7 @@ from calsuite.camera.constants import (
 )
 from calsuite.camera.settings import LENR_KEY, setting_on_any
 from calsuite.fit import Analysis
-from calsuite.synth.sensor import DARK_CURRENT_DOUBLING_C
+
 
 CHANNELS = ("R", "G1", "G2", "B")
 
@@ -74,9 +76,15 @@ def find_hot_pixels(frames: list, sigma_k: float = HOT_PIXEL_SIGMA_K) -> dict:
 
     Returns ``{"rows": int array, "cols": int array, "count": int,
     "threshold_dn": float, "median_dn": float}`` -- coordinates are into
-    each frame's own ``visible`` sub-array (row/col 0 is the visible area's
-    own origin, not the full ``cfa`` array's), so they line up directly with
-    ``raw.planes(frame, area="visible")``'s arrays too. ``threshold_dn``/
+    each frame's own ``visible`` sub-array at **full resolution** (row/col 0
+    is the visible area's own origin, not the full ``cfa`` array's). They do
+    *not* index ``raw.planes(frame, area="visible")``'s arrays, which are
+    quarter-resolution one-per-CFA-phase sub-images: a pixel at (row, col)
+    here is ``planes[phase][row // 2, col // 2]`` with
+    ``phase = _channel_at(...)`` for (row % 2, col % 2). (This docstring
+    used to claim they lined up directly, which would silently address a
+    different pixel -- and index-error past half the frame -- for any
+    consumer of the saved hot-pixel ``.npz``.) ``threshold_dn``/
     ``median_dn`` are in this baseline-corrected space (each phase's own
     median subtracted), not the sensor's absolute DN scale.
     """
@@ -205,7 +213,7 @@ def analyze_darks(frames: list, black_dn, gain_e_per_dn=None) -> Analysis:
     a.result = {
         "channels": channels_result,
         "hot_pixels_by_exposure_s": hot_pixel_summary,
-        "reference_doubling_temperature_c": DARK_CURRENT_DOUBLING_C,
+        "reference_doubling_temperature_c": DARK_CURRENT_REFERENCE_DOUBLING_C,
     }
     return a
 

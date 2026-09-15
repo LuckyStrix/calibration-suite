@@ -397,15 +397,40 @@ def _cmd_iso(args) -> int:
     all_ptc_records = list(st.all(kind="camera.ptc", device_id=args.device_id))
     ptc_records_ok = [r for r in all_ptc_records if r.status == "ok"]
 
+    # Read noise per ISO comes from `camera.bias` first: it measures the
+    # same quantity *directly* (std(A-B)/sqrt(2) on a bias pair, the design
+    # doc's +/-5% budget) while PTC's is the intercept of an extrapolation
+    # back to zero signal, whose own stderr is routinely as large as itself.
+    # The bias records were already being written with `read_noise_e` per
+    # channel and never read back. PTC stays as the fallback for an ISO
+    # with no bias record, and any channel whose PTC intercept didn't
+    # resolve (`read_noise_resolved`) is skipped rather than counted as
+    # zero -- a single 0.0 used to become `min_read_noise_e`, which made
+    # the tolerance 0.0 and recommended that ISO with status ok.
     read_noise_e_by_iso = {}
+    read_noise_source_by_iso = {}
     for r in ptc_records_ok:
         iso_value = r.conditions.get("iso")
         if iso_value is None:
             continue
         channels = r.result.get("channels", {})
-        rn = [c["fit"]["read_noise_e"] for c in channels.values() if "fit" in c]
+        rn = [
+            c["fit"]["read_noise_e"]
+            for c in channels.values()
+            if "fit" in c and c["fit"].get("read_noise_e") is not None
+        ]
         if rn:
             read_noise_e_by_iso[iso_value] = max(rn)
+            read_noise_source_by_iso[iso_value] = "camera.ptc (fit intercept)"
+
+    for r in st.all(kind="camera.bias", device_id=args.device_id):
+        if r.status != "ok":
+            continue
+        iso_value = r.conditions.get("iso")
+        rn = [v for v in (r.result.get("read_noise_e") or {}).values() if v is not None and v > 0]
+        if iso_value is not None and rn:
+            read_noise_e_by_iso[iso_value] = max(rn)
+            read_noise_source_by_iso[iso_value] = "camera.bias (bias-pair difference)"
 
     linearity_records = [r for r in st.all(kind="camera.linearity", device_id=args.device_id) if r.status == "ok"]
     full_well_e_by_iso = {}
@@ -433,6 +458,11 @@ def _cmd_iso(args) -> int:
         {r.conditions.get("iso") for r in all_ptc_records if r.status == "refused" and r.conditions.get("iso") is not None}
     )
     analysis = iso.analyze_iso_invariance(read_noise_e_by_iso, full_well_e_by_iso, refused_ptc_isos=refused_ptc_isos)
+    # Which record each ISO's read noise came from -- the bias-pair
+    # measurement and the PTC intercept are not the same quality of number,
+    # and a reader of the recommendation should be able to tell them apart.
+    if read_noise_source_by_iso:
+        analysis.result["read_noise_source_by_iso"] = read_noise_source_by_iso
 
     # Device identity for the record we're about to save either way -- an
     # empty sweep (no camera.ptc run yet at all) still gets one, so prefer

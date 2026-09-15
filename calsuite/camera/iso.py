@@ -54,6 +54,22 @@ def analyze_iso_invariance(read_noise_e_by_iso: dict, full_well_e_by_iso, *, ref
             cause = "no ok camera.linearity record has a known electron-domain full well"
         a.refuse("no_full_well", f"no exportable full well: {cause}")
 
+    non_positive = sorted(iso for iso, rn in read_noise_e_by_iso.items() if not (rn and rn > 0))
+    if non_positive:
+        # A zero or missing read noise would become `min_read_noise_e`,
+        # making the invariance tolerance 0.0 and recommending that ISO --
+        # a confident recommendation built on the one number that wasn't
+        # measured. (PTC's intercept used to clamp an unresolvable read
+        # noise to exactly 0.0; it reports None now, but a caller can still
+        # hand this a bad value.)
+        a.refuse(
+            "non_positive_read_noise",
+            f"ISO {', '.join(str(i) for i in non_positive)} has no positive read noise to place on the "
+            "invariance curve",
+            value=non_positive,
+            threshold=0.0,
+        )
+
     if not a.ok:
         return a
 

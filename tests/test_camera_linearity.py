@@ -81,14 +81,42 @@ def test_refuses_with_too_few_points():
     assert a.refusals[0].check == "too_few_points"
 
 
-def test_no_linear_range_refusal_fires_on_all_saturated_data():
-    # Every exposure drives the sensor past full well -- no prefix of
-    # points can stay within the deviation tolerance because they're all
-    # clipped from the very first point.
+def test_all_saturated_data_refuses_with_its_real_cause_not_a_zero_deviation():
+    """Every exposure drives the sensor past full well. That used to refuse
+    as `no_linear_range` with `value=0.0` against `threshold=2.0` and a
+    deviation array of all zeros: with nothing unclipped the baseline slope
+    is 0, so every prediction is 0, so the `np.where` fallback forces every
+    deviation to 0, and the empty range's max is 0 too. A reader (or
+    `doctor`) saw "0% deviation failed a 2% tolerance", which asserts the
+    opposite of what happened. The honest finding is that there is no
+    baseline at all."""
     frames = _flats(np.linspace(5.0, 20.0, 6), flux_e_per_s=50000.0, full_well_e=5000.0)
     a = linearity.analyze_linearity(frames, 512.0)
     assert not a.ok
-    assert any(r.check == "no_linear_range" for r in a.refusals)
+    clipped = [r for r in a.refusals if r.check == "all_points_clipped"]
+    assert clipped, [r.check for r in a.refusals]
+    assert clipped[0].value == clipped[0].threshold == 6  # all 6 steps, named as such
+    assert "no baseline" in clipped[0].message
+
+
+def test_channel_records_why_its_linear_prefix_stopped():
+    """The other half of the old conflation: a channel with a perfectly
+    usable baseline whose first point is off it reports *that* deviation
+    and says the break was a deviation, not a clip."""
+    # Baseline ~1000 DN/s from the later points; the first point reads half
+    # what it should.
+    points = [(1.0, 500.0), (2.0, 2000.0), (3.0, 3000.0), (4.0, 4000.0), (5.0, 5000.0)]
+    result = linearity._analyze_channel(points, white_level=20000.0, black=0.0)
+    assert result["linear_range_n_points"] == 0
+    assert result["linear_range_break_reason"] == "deviation"
+    assert result["linear_range_break_deviation_pct"] < -20.0
+    assert result["n_clipped"] == 0
+
+    # A clean series stops for no reason at all -- it never breaks.
+    clean = [(t, 1000.0 * t) for t in (1.0, 2.0, 3.0, 4.0, 5.0)]
+    clean_result = linearity._analyze_channel(clean, white_level=20000.0, black=0.0)
+    assert clean_result["linear_range_n_points"] == 5
+    assert clean_result["linear_range_break_reason"] is None
 
 
 def test_no_linear_range_refusal_does_not_fire_on_good_data():

@@ -11,16 +11,11 @@ from __future__ import annotations
 import numpy as np
 
 from calsuite import raw as rawmod
+from calsuite.camera.constants import FIXED_PATTERN_DSNU_MIN_EXCESS, FIXED_PATTERN_MIN_FRAMES
 from calsuite.fit import Analysis
 
 CHANNELS = ("R", "G1", "G2", "B")
 
-FIXED_PATTERN_MIN_FRAMES = 3
-# A single stacked frame can't distinguish "this pixel's fixed pattern" from
-# "this pixel's noise that frame" -- a handful of frames averaged brings the
-# per-pixel noise down enough that the map that's left over is dominated by
-# the pattern, not by residual shot/read noise. Matches the order of
-# magnitude used elsewhere in this area (BIAS_MIN_FRAMES, DARK_MIN_EXPOSURES_PER_BIN).
 
 
 def _black_for(black_dn, channel: str) -> float:
@@ -39,9 +34,49 @@ def _stack(frames: list) -> dict:
 
 def dsnu_map(darks: list, black_dn) -> dict:
     """``{channel: 2D array}`` -- stacked dark signal (DN, black-subtracted)
-    per pixel. Its per-channel std is the DSNU figure."""
+    per pixel. Note that its raw per-channel std is *not* the DSNU figure:
+    it still contains the temporal-noise floor stacking leaves behind. Use
+    ``dsnu_stats`` for the number."""
     stacked = _stack(darks)
     return {ch: stacked[ch] - _black_for(black_dn, ch) for ch in CHANNELS}
+
+
+def dsnu_stats(darks: list, black_dn) -> dict:
+    """``{channel: {"dsnu_std_dn", "temporal_floor_dn", "observed_std_dn",
+    "resolved"}}`` -- DSNU with the residual temporal noise removed.
+
+    Averaging N darks does not remove per-pixel temporal noise, it divides
+    its variance by N; the std of the stacked image is therefore
+    ``sqrt(dsnu^2 + var_temporal / N)``, not the DSNU. Reporting that std
+    directly (as this module did) reports the floor: at N = 3 with a
+    realistic 3 e- read noise and gain 2, "dsnu_std_dn" came back as
+    0.89 DN whether the injected DSNU was 0.125 DN or exactly zero -- it
+    was measuring 1.5/sqrt(3) = 0.87 DN of read noise both times.
+
+    The floor is estimated from the frames themselves (the mean over pixels
+    of each pixel's variance across the stack, divided by N) and subtracted
+    in quadrature. When what's left isn't at least
+    ``FIXED_PATTERN_DSNU_MIN_EXCESS`` of the floor, `dsnu_std_dn` is None
+    and `resolved` is False: this many frames cannot see a pattern that
+    small.
+    """
+    n = len(darks)
+    out = {}
+    for ch in CHANNELS:
+        stack = np.stack([rawmod.planes(f, area="visible")[ch] for f in darks])
+        mean_image = stack.mean(axis=0) - _black_for(black_dn, ch)
+        observed_var = float(mean_image.var())
+        temporal_var = float(stack.var(axis=0, ddof=1).mean()) if n > 1 else 0.0
+        floor_var = temporal_var / n if n else 0.0
+        pattern_var = observed_var - floor_var
+        resolved = pattern_var > FIXED_PATTERN_DSNU_MIN_EXCESS * floor_var and pattern_var > 0
+        out[ch] = {
+            "dsnu_std_dn": float(np.sqrt(pattern_var)) if resolved else None,
+            "temporal_floor_dn": float(np.sqrt(floor_var)),
+            "observed_std_dn": float(np.sqrt(observed_var)),
+            "resolved": bool(resolved),
+        }
+    return out
 
 
 def prnu_map(flats: list, black_dn) -> dict:
@@ -105,7 +140,7 @@ def analyze_fixed_pattern(darks: list, flats: list, biases: list, black_dn) -> A
         )
         return a
 
-    dsnu = dsnu_map(darks, black_dn)
+    dsnu = dsnu_stats(darks, black_dn)
     prnu = prnu_map(flats, black_dn)
     banding = banding_spectrum(biases)
 
@@ -114,7 +149,10 @@ def analyze_fixed_pattern(darks: list, flats: list, biases: list, black_dn) -> A
         row_peak, row_idx, row_median = _peak_excluding_dc(banding[ch]["row"])
         col_peak, col_idx, col_median = _peak_excluding_dc(banding[ch]["col"])
         channels_result[ch] = {
-            "dsnu_std_dn": float(dsnu[ch].std()),
+            "dsnu_std_dn": dsnu[ch]["dsnu_std_dn"],
+            "dsnu_resolved": dsnu[ch]["resolved"],
+            "dsnu_temporal_floor_dn": dsnu[ch]["temporal_floor_dn"],
+            "dsnu_observed_std_dn": dsnu[ch]["observed_std_dn"],
             "prnu_std_pct": float(prnu[ch].std()) * 100.0,
             "row_banding_peak_ratio": row_peak / row_median if row_median else float("inf"),
             "row_banding_peak_cycles_per_frame": row_idx,
