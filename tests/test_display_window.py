@@ -1,6 +1,23 @@
 import pytest
 
 
+@pytest.fixture
+def spotread_argyll(fake_bin, monkeypatch):
+    """``(ArgyllBackend(), an already-open dummy-driver window)`` against the
+    same fake spotread ``test_spotread_session.py`` uses -- for tests that
+    need the real ``measure_via_window`` wiring rather than a bare session."""
+    from tests.test_spotread_session import FAKE_SPOTREAD
+
+    from calsuite.display import window as windowmod
+    from calsuite.display.backends.argyll import ArgyllBackend
+
+    fake_bin("spotread", FAKE_SPOTREAD)
+    monkeypatch.setenv("FAKE_DIAL_WRONG_TRIES", "0")
+    screen = windowmod.open_window(640, 400, fullscreen=False)
+    yield ArgyllBackend(), screen
+    windowmod.close_window()
+
+
 @pytest.fixture(autouse=True)
 def _dummy_video_driver(monkeypatch):
     monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
@@ -219,3 +236,66 @@ def test_run_patch_sequence_pauses_only_on_placement_patches_and_numbers_them(mo
         assert seen == []  # a camera watching the whole screen never needs the pause
     finally:
         window.close_window()
+
+
+# -- "Measuring..." indicator ----------------------------------------------------
+
+
+def test_measuring_indicator_does_not_touch_the_square():
+    """Drawn while a real reading is in progress -- must not add anything on
+    top of, or change the color of, the square the instrument is reading."""
+    import numpy as np
+
+    from calsuite.display import window
+
+    w, h = 640, 400
+    screen = window.open_window(w, h, fullscreen=False)
+    try:
+        patch = _grid_patch(2, 2)  # the center square: least free space on either side
+        window.show_patch(screen, patch.rgb, position=patch.position, size_frac=patch.size_frac)
+        before = _rgb(screen).copy()
+        window.draw_measuring_indicator(screen, patch)
+        after = _rgb(screen)
+        side = round(patch.size_frac * min(w, h))
+        cx, cy = round(patch.position[0] * w), round(patch.position[1] * h)
+        square = np.zeros(after.shape[:2], dtype=bool)
+        square[cy - side // 2 : cy + side // 2 + 1, cx - side // 2 : cx + side // 2 + 1] = True
+        assert np.array_equal(before[square], after[square]), "the square's own pixels changed"
+        assert not np.array_equal(before, after), "no indicator was drawn at all"
+    finally:
+        window.close_window()
+
+
+def test_argyll_backend_shows_the_indicator_only_for_placement_patches_and_clears_it(spotread_argyll, monkeypatch):
+    """``read_one`` inside ``measure_via_window``: a full-screen patch (no
+    ``placement``) gets no overlay -- there's no free area to draw on
+    without changing the exact color under measurement -- and a placement
+    patch ends each reading showing the clean square again, not the
+    leftover "Measuring..." text."""
+    import pygame
+
+    from calsuite.display import patches as patchesmod
+
+    backend, screen = spotread_argyll
+    full_screen_patch = patchesmod.gray_ramp(2)[1]
+    grid_patch = patchesmod.uniformity_grid()[0][0]
+
+    with backend.session(say=lambda _t: None, ask=lambda _p: "") as session:
+        backend.measure_via_window(screen, [full_screen_patch], session, sleep=lambda _s: None)
+        full_screen_pixels = _rgb(screen).copy()
+
+        # measure_via_window always confirms placement for a patch that has
+        # one (real handheld-instrument use), so this needs a SPACE to get
+        # past `wait_for_placement` -- unlike run_patch_sequence's own tests
+        # above, this goes through the real SDL event queue (dummy driver),
+        # not a monkeypatched pygame.event.get.
+        monkeypatch.setattr(pygame.event, "get", lambda: [_space()])
+        backend.measure_via_window(screen, [grid_patch], session, sleep=lambda _s: None)
+        after = _rgb(screen)
+
+    expected = tuple(round(c * 255) for c in full_screen_patch.rgb)
+    assert tuple(full_screen_pixels[full_screen_pixels.shape[0] // 2, full_screen_pixels.shape[1] // 2]) == expected
+    assert not (after.sum(axis=2) > 0).all(), "a placement patch should not fill the whole screen"
+    w, h = screen.get_size()
+    cx, cy = round(grid_patch.position[0] * w), round(grid_patch.position[1] * h)
+    assert tuple(after[cy, cx]) == (255, 255, 255)  # the clean square, not leftover prompt/indicator text

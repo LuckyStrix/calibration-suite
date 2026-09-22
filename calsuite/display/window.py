@@ -141,6 +141,23 @@ def _wrap(font, text: str, max_px: int) -> list:
     return lines + ([cur] if cur else [])
 
 
+def _text_region(w: int, h: int, patch) -> tuple:
+    """(max line width in px, horizontal center) for prompt text living in
+    the free strip beside ``patch``'s square, on whichever side has more
+    room, never closer than ``PLACEMENT_TEXT_MARGIN_FRAC`` -- shared by
+    ``draw_placement_prompt`` and ``draw_measuring_indicator`` so the two
+    kinds of on-screen text always land in the same place for a given
+    patch."""
+    side = round(patch.size_frac * min(w, h))
+    sq_cx, margin = patch.position[0] * w, w * PLACEMENT_TEXT_MARGIN_FRAC
+    if patch.position[0] < 0.5:
+        lo, hi = sq_cx + side / 2 + margin, w - margin
+    else:
+        lo, hi = margin, sq_cx - side / 2 - margin
+    max_px = max(1, min(round(w * PLACEMENT_TEXT_WIDTH_FRAC), round(hi - lo)))
+    return max_px, round((lo + hi) / 2)
+
+
 def draw_placement_prompt(screen: pygame.Surface, patch, index: int, total: int) -> None:
     """Show ``patch`` with instructions for the human next to it, on the half
     of the screen it is *not* in. The terminal is hidden behind this window
@@ -158,16 +175,7 @@ def draw_placement_prompt(screen: pygame.Surface, patch, index: int, total: int)
         (big, "Then press SPACE", PLACEMENT_KEY_GRAY),
         (small, "Hold still until the next square lights up.   ESC stops the run.", PLACEMENT_TEXT_GRAY),
     ]
-    # The text lives in the free strip beside the square, on whichever side
-    # has more room, never closer than PLACEMENT_TEXT_MARGIN_FRAC.
-    side = round(patch.size_frac * min(w, h))
-    sq_cx, margin = patch.position[0] * w, w * PLACEMENT_TEXT_MARGIN_FRAC
-    if patch.position[0] < 0.5:
-        lo, hi = sq_cx + side / 2 + margin, w - margin
-    else:
-        lo, hi = margin, sq_cx - side / 2 - margin
-    max_px = max(1, min(round(w * PLACEMENT_TEXT_WIDTH_FRAC), round(hi - lo)))
-    cx = round((lo + hi) / 2)
+    max_px, cx = _text_region(w, h, patch)
     rendered, gap = [], round(short * 0.03)
     for font, text, gray in blocks:
         for line in _wrap(font, text, max_px):
@@ -179,6 +187,29 @@ def draw_placement_prompt(screen: pygame.Surface, patch, index: int, total: int)
         if surf is None:
             y += gap
             continue
+        screen.blit(surf, surf.get_rect(midtop=(cx, y)))
+        y += surf.get_height()
+    pygame.display.flip()
+
+
+def draw_measuring_indicator(screen: pygame.Surface, patch) -> None:
+    """A small "Measuring..." note in the same free strip
+    ``draw_placement_prompt`` uses, drawn once a reading has actually
+    started -- so a real, in-progress reading (which can take several
+    seconds, longer on a dark patch) doesn't look identical to a stuck one,
+    and so someone isn't tempted to press SPACE again while it's busy (see
+    ``spotread_session.NeedsRecalibration``: pressing a key while the
+    instrument's own reading is in progress is one plausible way to land it
+    in a state a second, software-sent keypress didn't cause but could
+    still be mistaken for). Only called for a patch with ``placement`` set
+    -- a full-screen patch has no free area to draw on without changing the
+    exact color under measurement."""
+    w, h = screen.get_size()
+    font = pygame.font.Font(None, max(16, round(min(w, h) * 0.06)))
+    max_px, cx = _text_region(w, h, patch)
+    y = round(h * 0.06)
+    for line in _wrap(font, "Measuring... hold still", max_px):
+        surf = font.render(line, True, _rgb255(PLACEMENT_KEY_GRAY))
         screen.blit(surf, surf.get_rect(midtop=(cx, y)))
         y += surf.get_height()
     pygame.display.flip()

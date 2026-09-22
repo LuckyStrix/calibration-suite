@@ -106,10 +106,21 @@ class ArgyllBackend:
             if windowmod.check_abort():
                 raise windowmod.WindowAborted("aborted during a reading")
 
+        def read_one(patch):
+            # Only a placement patch (a small square) has free screen area
+            # to draw "Measuring..." on without changing the exact color a
+            # full-screen patch is being read as.
+            if patch.placement is not None:
+                windowmod.draw_measuring_indicator(screen, patch)
+            xyz = np.array(session.measure(poll=poll))
+            if patch.placement is not None:
+                windowmod.show_patch(screen, patch.rgb, position=patch.position, size_frac=patch.size_frac)
+            return xyz
+
         xyzs = windowmod.run_patch_sequence(
             screen,
             patches,
-            lambda _patch: np.array(session.measure(poll=poll)),
+            read_one,
             settle_s=settle_s,
             sleep=sleep,
             confirm_placement=True,  # a handheld instrument has to be moved onto each uniformity square

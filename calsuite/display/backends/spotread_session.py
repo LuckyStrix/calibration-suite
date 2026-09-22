@@ -93,6 +93,18 @@ class SessionAborted(RuntimeError):
     """The human chose to quit at a prompt."""
 
 
+class NeedsRecalibration(tools.ToolError):
+    """A reading came back, but the instrument then dropped into "needs a
+    calibration" instead of its normal ready prompt -- a bumped dial, or an
+    extra physical trigger (the ColorMunki's own switch fires on contact,
+    independent of any key this module sends). Subclasses ``ToolError`` so
+    existing callers (``display/commands.py``'s abort handling) already
+    catch it and stop cleanly with this message, rather than the old
+    behaviour: ``measure()`` silently retried the same ready-prompt check
+    for the full ``SPOTREAD_TIMEOUT_S`` (60s) with nothing on screen to
+    show why, indistinguishable from a genuine freeze."""
+
+
 def _clean(text: str) -> str:
     lines = [ln.rstrip() for ln in text.replace("\r", "").split("\n")]
     return "\n".join(ln for ln in lines if ln.strip())
@@ -245,14 +257,22 @@ class SpotreadSession:
 
         def settled(b: str) -> bool:
             m = RESULT_RE.search(b)
-            if m:
-                return READY_PROMPT in b[m.end():]
-            # No result, but back at the idle prompt or asking for the dial
-            # again: the reading failed or the instrument wants recalibrating.
-            return READY_PROMPT in b or ACTION_PROMPT_RE.search(b) is not None
+            tail = b[m.end():] if m else b
+            # Checked the same way whether or not a result already came
+            # back -- a result followed by a fresh "needs calibration"
+            # prompt (see NeedsRecalibration) is just as settled a state as
+            # a result followed by the normal ready prompt; the old version
+            # only recognized the latter, so the former made this predicate
+            # never come true and `_wait_for` spun silently to `timeout`.
+            return READY_PROMPT in tail or ACTION_PROMPT_RE.search(tail) is not None
 
         buf = self._wait_for(settled, timeout, poll)
         m = RESULT_RE.search(buf)
         if not m:
             raise tools.ToolError(f"spotread gave no reading (misread, or it wants recalibrating). Its output:\n{_clean(buf)[-600:]}")
+        if ACTION_PROMPT_RE.search(buf[m.end():]) is not None:
+            raise NeedsRecalibration(
+                "the instrument gave a reading but then asked to be recalibrated before it will take another "
+                f"-- recalibrate it and start the run again. Its output:\n{_clean(buf)[-600:]}"
+            )
         return tuple(float(g) for g in m.groups())
