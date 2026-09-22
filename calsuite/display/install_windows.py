@@ -24,7 +24,7 @@ CONTROL_PANEL_STEPS = (
 )
 
 
-def install(icc_path: Path, *, confirm: bool = False) -> InstallReport:
+def install(icc_path: Path, *, cal_path: Path | None = None, confirm: bool = False) -> InstallReport:
     report = InstallReport()
     if sys.platform != "win32":
         report.add("platform", False, "install_windows.install() only runs on win32; nothing was done")
@@ -33,8 +33,16 @@ def install(icc_path: Path, *, confirm: bool = False) -> InstallReport:
         try:
             tools.run(["dispwin", "-I", str(icc_path)])
             report.add("dispwin -I", True)
-            return report
         except tools.ToolError as exc:
             report.add("dispwin -I", False, str(exc))
+            report.add("manual install required", False, CONTROL_PANEL_STEPS)
+            return report
+        if cal_path is not None:
+            try:
+                tools.run(["dispwin", str(cal_path)])
+                report.add("dispwin <calfile>", True)
+            except tools.ToolError as exc:
+                report.add("dispwin <calfile>", False, str(exc))
+        return report
     report.add("manual install required", False, CONTROL_PANEL_STEPS)
     return report

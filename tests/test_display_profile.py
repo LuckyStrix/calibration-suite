@@ -82,6 +82,52 @@ def test_build_profile_refuses_when_nonadditive_and_no_colprof(tmp_path, monkeyp
         )
 
 
+def test_build_profile_also_writes_a_vcgt_cal(tmp_path, fake_bin):
+    """colprof's own output never carries a `vcgt` tag here (no `.cal`
+    linked in from a `dispcal` session) -- `build_profile` closes that gap
+    itself by inverting the already-fitted TRC into a `.cal` `dispwin` can
+    load directly."""
+    fake_bin("colprof", _FAKE_COLPROF)
+    model = DisplayModel(white_boost_frac=0.0)
+    black, r, g, b, w = (model.measure(c) for c in ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1)))
+    additivity_analysis = analysismod.additivity(black, r, g, b, w)
+    trc_analysis = analysismod.trc_fit({ch: _ramp_data(model, ch) for ch in ("r", "g", "b")}, black_y=float(black[1]))
+
+    result = profilemod.build_profile(
+        tmp_path / "out.icc",
+        rgb_list=[(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1)],
+        xyz_list=[list(black), list(r), list(g), list(b), list(w)],
+        additivity_analysis=additivity_analysis,
+        trc_analysis=trc_analysis,
+        primaries_measured={"r": r, "g": g, "b": b, "w": w, "k": black},
+    )
+    assert result.cal_path is not None
+    assert result.cal_path.exists()
+    assert result.vcgt_note is None
+
+
+def test_build_profile_cal_path_none_when_a_channel_trc_refused(tmp_path, fake_bin):
+    fake_bin("colprof", _FAKE_COLPROF)
+    model = DisplayModel(white_boost_frac=0.0)
+    black, r, g, b, w = (model.measure(c) for c in ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1)))
+    additivity_analysis = analysismod.additivity(black, r, g, b, w)
+    trc_analysis = analysismod.Analysis(result={
+        "lut": {"r": [0.0, 0.5, 1.0], "g": [0.0, 0.5, 1.0]},
+        "levels": {"r": [0.0, 0.5, 1.0], "g": [0.0, 0.5, 1.0]},
+    })
+
+    result = profilemod.build_profile(
+        tmp_path / "out.icc",
+        rgb_list=[(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1)],
+        xyz_list=[list(black), list(r), list(g), list(b), list(w)],
+        additivity_analysis=additivity_analysis,
+        trc_analysis=trc_analysis,
+        primaries_measured={"r": r, "g": g, "b": b, "w": w, "k": black},
+    )
+    assert result.cal_path is None
+    assert "b" in result.vcgt_note
+
+
 def test_builtin_fallback_profile_validates_against_synthetic_display(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", "/nonexistent-bin-dir")  # force the built-in fallback: no colprof
     model = DisplayModel(white_boost_frac=0.0)  # additive, so the fallback is legal

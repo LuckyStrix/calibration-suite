@@ -123,6 +123,57 @@ def test_write_ti3_matches_the_documented_percentage_scale_in_the_raw_text(tmp_p
     assert [float(v) for v in fields[1:]] == pytest.approx([50.0, 25.0, 0.0, 40.0, 100.0, 10.0])
 
 
+# A real .cal that ArgyllCMS's own `dispwin -s` wrote back from this
+# laptop's Video LUT (2026-09-22), truncated to its header + first few rows
+# -- checked against for the same reason as `_REAL_ARGYLL_TI3` above: this
+# is dispwin's own output, not anything this suite wrote, so it pins
+# write_cal's header/field layout to what the real tool actually expects.
+_REAL_ARGYLL_CAL_HEADER = """CAL
+
+DESCRIPTOR "Argyll Device Calibration Curves"
+ORIGINATOR "Argyll synthcal"
+CREATED "Tue Sep 22 16:01:48 2026"
+DEVICE_CLASS "DISPLAY"
+COLOR_REP "RGB"
+
+NUMBER_OF_FIELDS 4
+BEGIN_DATA_FORMAT
+RGB_I RGB_R RGB_G RGB_B
+END_DATA_FORMAT
+"""
+
+
+def test_write_cal_matches_real_argyll_header_layout(tmp_path):
+    path = tmp_path / "vcgt.cal"
+    curves = {"r": [0.0, 0.5, 1.0], "g": [0.0, 0.4, 1.0], "b": [0.0, 0.6, 1.0]}
+    cgats.write_cal(path, curves)
+    text = path.read_text(encoding="utf-8")
+
+    # Same keyword lines, in the same order, as a real dispwin-written .cal
+    # (only DESCRIPTOR/ORIGINATOR/CREATED's *values* legitimately differ).
+    real_keywords = [ln.split(maxsplit=1)[0] for ln in _REAL_ARGYLL_CAL_HEADER.splitlines() if ln.strip()]
+    written_keywords = [
+        ln.split(maxsplit=1)[0] for ln in text.split("NUMBER_OF_SETS")[0].splitlines() if ln.strip()
+    ]
+    assert written_keywords == real_keywords
+    for line in ('DEVICE_CLASS "DISPLAY"', 'COLOR_REP "RGB"', "NUMBER_OF_FIELDS 4",
+                 "BEGIN_DATA_FORMAT", "RGB_I RGB_R RGB_G RGB_B", "END_DATA_FORMAT"):
+        assert line in text
+
+    lines = text.splitlines()
+    assert "NUMBER_OF_SETS 3" in lines
+    data = lines[lines.index("BEGIN_DATA") + 1 : lines.index("END_DATA")]
+    assert len(data) == 3
+    first, last = data[0].split(), data[-1].split()
+    assert [float(v) for v in first] == pytest.approx([0.0, 0.0, 0.0, 0.0])
+    assert [float(v) for v in last] == pytest.approx([1.0, 1.0, 1.0, 1.0])
+
+
+def test_write_cal_rejects_mismatched_channel_lengths(tmp_path):
+    with pytest.raises(ValueError):
+        cgats.write_cal(tmp_path / "bad.cal", {"r": [0.0, 1.0], "g": [0.0, 0.5, 1.0], "b": [0.0, 1.0]})
+
+
 def test_read_rejects_missing_xyz_fields(tmp_path):
     path = tmp_path / "bad.ti3"
     path.write_text(

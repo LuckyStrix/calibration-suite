@@ -8,7 +8,7 @@ gets an explicit refusal, since the built-in writer has no LUT capability.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -67,6 +67,8 @@ class ProfileResult:
     method: str  # "colprof -as (matrix/shaper)" | "colprof (LUT)" | "built-in matrix/TRC"
     profcheck_ok: bool | None  # None if profcheck wasn't run (not installed)
     profcheck_output: str
+    cal_path: Path | None = None  # VCGT correction curve (dispwin <calfile>), None if not built
+    vcgt_note: str | None = None  # why cal_path is None, when it is
 
 
 def build_with_colprof(
@@ -206,9 +208,8 @@ def build_profile(
     recommend_lut = bool(additivity_analysis.result.get("recommend_lut"))
 
     if tools.which("colprof"):
-        return build_with_colprof(ti3_base, recommend_lut=recommend_lut, description=description, out_path=out_path)
-
-    if recommend_lut:
+        result = build_with_colprof(ti3_base, recommend_lut=recommend_lut, description=description, out_path=out_path)
+    elif recommend_lut:
         de00 = additivity_analysis.result.get("additivity_de00")
         raise ProfileRefused(
             "ArgyllCMS's colprof is not installed and this display failed its additivity check "
@@ -216,4 +217,25 @@ def build_profile(
             "built-in ICC writer (formats/icc.py) is matrix/TRC only. Install ArgyllCMS "
             "(`colprof`) to build a LUT profile for this display."
         )
-    return build_fallback_matrix_trc(out_path, primaries_measured=primaries_measured, trc_analysis=trc_analysis, description=description)
+    else:
+        result = build_fallback_matrix_trc(out_path, primaries_measured=primaries_measured, trc_analysis=trc_analysis, description=description)
+
+    return _attach_vcgt(result, ti3_base.with_suffix(".cal"), trc_analysis)
+
+
+def _attach_vcgt(result: ProfileResult, cal_path: Path, trc_analysis) -> ProfileResult:
+    """Build+write the VCGT correction curve (docs/design.md gap: `colprof`
+    here never embeds a `vcgt` tag -- see CLAUDE.md) and attach it to
+    `result`, or attach why it couldn't be built. Never raises: a missing
+    VCGT curve doesn't invalidate the ICC profile itself, so this can't turn
+    an otherwise-good profile build into a refusal (`_cmd_profile` keeps the
+    two independent for exactly that reason)."""
+    from calsuite.display import analysis as displayanalysis
+
+    vcgt_analysis = displayanalysis.vcgt_correction(trc_analysis)
+    if not vcgt_analysis.ok:
+        note = "; ".join(r.message for r in vcgt_analysis.refusals)
+        return replace(result, cal_path=None, vcgt_note=note)
+
+    cgats.write_cal(cal_path, vcgt_analysis.result["curves"])
+    return replace(result, cal_path=cal_path, vcgt_note=None)

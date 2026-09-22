@@ -564,7 +564,13 @@ def _cmd_profile(args) -> int:
         print(f"refused: {exc}")
         return 1
 
-    analysis = Analysis(result={"path": str(result.path), "method": result.method, "profcheck_ok": result.profcheck_ok})
+    analysis = Analysis(result={
+        "path": str(result.path),
+        "method": result.method,
+        "profcheck_ok": result.profcheck_ok,
+        "cal_path": str(result.cal_path) if result.cal_path else None,
+        "vcgt_note": result.vcgt_note,
+    })
     record = storemod.Record.from_analysis(
         kind="display.profile", device=device, analysis=analysis, provenance="derived",
         method={"name": _METHOD_NAME, "calsuite_version": __version__, "params": {}},
@@ -572,6 +578,10 @@ def _cmd_profile(args) -> int:
     )
     path = store.save(record)
     print(f"wrote {path} -- profile at {result.path} ({result.method})")
+    if result.cal_path:
+        print(f"  VCGT correction curve at {result.cal_path}")
+    else:
+        print(f"  no VCGT correction curve: {result.vcgt_note}")
     return 0
 
 
@@ -588,12 +598,14 @@ def _cmd_install(args) -> int:
         print(f"no passing display.profile record for device {device['id']!r}")
         return 1
     icc_path = profile_record.result["path"]
+    cal_path = profile_record.result.get("cal_path")
 
     if sys.platform == "win32":
-        report = install_windows.install(icc_path)
+        report = install_windows.install(icc_path, cal_path=cal_path)
     else:
         report = install_linux.install(
             icc_path,
+            cal_path=cal_path,
             write_autostart=args.write_autostart,
             colord_device=args.colord_device,
             dispwin_display=args.dispwin_display,

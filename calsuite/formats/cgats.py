@@ -78,6 +78,53 @@ def write_ti3(
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_cal(
+    path: Path | str,
+    curves: dict,
+    *,
+    descriptor: str = "calsuite VCGT correction curve",
+    originator: str = "calsuite",
+) -> None:
+    """Write an Argyll ``.cal`` (video-card-gamma-table correction curve)
+    that ``dispwin <calfile>`` loads straight into the hardware Video LUT.
+    ``curves``: ``{"r": [...], "g": [...], "b": [...]}``, each a same-length
+    list of corrected levels in ``[0, 1]`` at evenly spaced input codes
+    (``display.analysis.vcgt_correction``'s ``result["curves"]``).
+
+    Header/field layout confirmed against a real ``.cal`` this project's own
+    ArgyllCMS ``dispwin -s`` wrote back from this laptop's Video LUT
+    (2026-09-22) -- ``CAL``/keyword lines, then ``RGB_I RGB_R RGB_G RGB_B``
+    rows, exactly mirroring ``write_ti3``'s ``CTI3`` sibling format.
+    """
+    r, g, b = curves["r"], curves["g"], curves["b"]
+    n = len(r)
+    if not (len(g) == n and len(b) == n):
+        raise ValueError(f"curves must be equal length, got r={len(r)} g={len(g)} b={len(b)}")
+
+    lines = [
+        "CAL",
+        "",
+        f'DESCRIPTOR "{descriptor}"',
+        f'ORIGINATOR "{originator}"',
+        f'CREATED "{datetime.now(timezone.utc).strftime("%a %b %d %H:%M:%S %Y")}"',
+        'DEVICE_CLASS "DISPLAY"',
+        'COLOR_REP "RGB"',
+        "",
+        "NUMBER_OF_FIELDS 4",
+        "BEGIN_DATA_FORMAT",
+        "RGB_I RGB_R RGB_G RGB_B",
+        "END_DATA_FORMAT",
+        "",
+        f"NUMBER_OF_SETS {n}",
+        "BEGIN_DATA",
+    ]
+    for i in range(n):
+        level = i / (n - 1) if n > 1 else 0.0
+        lines.append(f"{level:.6f} {r[i]:.6f} {g[i]:.6f} {b[i]:.6f}")
+    lines.append("END_DATA")
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _split_keyword_line(line: str) -> tuple[str, str] | None:
     parts = line.split(None, 1)
     if len(parts) != 2:

@@ -170,6 +170,56 @@ def trc_fit(channel_ramps: dict, black_y: float = 0.0) -> Analysis:
     return analysis
 
 
+def vcgt_correction(trc_analysis: Analysis, *, target_gamma: float = dc.VCGT_TARGET_GAMMA, steps: int = dc.VCGT_STEPS) -> Analysis:
+    """Invert `trc_fit`'s measured per-channel LUT into a video-card-gamma-
+    table (VCGT) correction curve: for `steps` evenly spaced output codes
+    `x`, what input level `d` makes the *measured* response equal the
+    canonical target `x ** target_gamma`. This is what a hardware video LUT
+    load (`dispwin <calfile>`) needs to make a non-color-managed
+    application's output follow a conventional gamma curve, independent of
+    the ICC profile's own matrix/TRC (which only color-managed applications
+    read) -- see CLAUDE.md's note on `colprof`'s output never carrying a
+    `vcgt` tag here, since this project profiles from a raw `spotread`
+    session rather than through `dispcal`'s own calibration+.cal loop.
+
+    Refuses outright, rather than building a correction from a partial set,
+    if any channel's `trc_fit` was itself refused: a video LUT with only
+    two of three channels corrected is a wrong-color cast, not a
+    conservative fallback.
+    """
+    analysis = Analysis()
+    luts = trc_analysis.result.get("lut", {})
+    levels = trc_analysis.result.get("levels", {})
+    missing = [ch for ch in ("r", "g", "b") if ch not in luts]
+    if missing:
+        analysis.refuse(
+            "vcgt_missing_channel_trc",
+            f"channel(s) {missing} have no usable trc_fit (refused above) -- a VCGT curve needs all three "
+            "channels' measured response, not two out of three",
+            3 - len(missing),
+            3,
+        )
+        return analysis
+
+    x = np.linspace(0.0, 1.0, steps)
+    target = x**target_gamma
+    curves = {}
+    for ch in ("r", "g", "b"):
+        measured_level = np.asarray(levels[ch], dtype=np.float64)
+        measured_response = np.asarray(luts[ch], dtype=np.float64)
+        # np.interp needs its x-coordinates strictly increasing; the fitted
+        # LUT is measured data and can carry tiny non-monotonic noise step
+        # to step, so the inverse is taken against a running-max-enforced
+        # copy, not the raw measured curve.
+        monotonic_response = np.maximum.accumulate(measured_response)
+        curves[ch] = [float(v) for v in np.clip(np.interp(target, monotonic_response, measured_level), 0.0, 1.0)]
+
+    analysis.result["target_gamma"] = target_gamma
+    analysis.result["input_levels"] = [float(v) for v in x]
+    analysis.result["curves"] = curves
+    return analysis
+
+
 # ---------------------------------------------------------------------------
 # additivity
 # ---------------------------------------------------------------------------

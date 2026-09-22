@@ -27,6 +27,7 @@ from calsuite import tools
 
 AUTOSTART_PATH = Path.home() / ".config" / "openbox" / "autostart"
 AUTOSTART_MARKER = "# calsuite: load display profile VCGT"
+AUTOSTART_MARKER_END = "# calsuite: end"
 
 
 @dataclass
@@ -189,12 +190,41 @@ def install_dispwin(icc_path: Path, *, display: int | None = None) -> InstallRep
     return report
 
 
-def write_autostart_entry(icc_path: Path, *, autostart_path: Path = AUTOSTART_PATH) -> InstallReport:
-    """Add a `dispwin -I <profile>` loader line to Openbox's autostart
-    (design §5.5) -- ONLY called when the caller explicitly asked
-    (`--write-autostart`); never as a side effect of any other install
-    step. Idempotent: a previous calsuite-written marker+line pair is
-    replaced in place, not duplicated, on a second run.
+def load_vcgt_cal(cal_path: Path, *, display: int | None = None) -> InstallReport:
+    """`dispwin <calfile>` (no `-I`): loads a VCGT correction curve straight
+    into the Video LUT without touching the installed-profile atom `-I`
+    sets. Needed because this project's `colprof` output never carries a
+    `vcgt` tag (`display.profile`'s own docstring on why) -- `install_dispwin`
+    alone loads a linear (no-op) LUT for a color-managed-app-only-visible
+    profile; this is the step that makes the correction visible outside
+    color-managed applications too."""
+    report = InstallReport()
+    if tools.which("dispwin") is None:
+        report.add("dispwin <calfile>", False, "dispwin not found on PATH")
+        return report
+    argv = ["dispwin"]
+    if display is not None:
+        argv += ["-d", str(display)]
+    argv += [str(cal_path)]
+    try:
+        tools.run(argv)
+        report.add("dispwin <calfile>", True, f"display {display}" if display is not None else "")
+    except tools.ToolError as exc:
+        report.add("dispwin <calfile>", False, str(exc))
+    return report
+
+
+def write_autostart_entry(
+    icc_path: Path, *, cal_path: Path | None = None, autostart_path: Path = AUTOSTART_PATH
+) -> InstallReport:
+    """Add `dispwin -I <profile>` (+, if `cal_path` is given, a second
+    `dispwin <calfile>` VCGT load right after it -- see `load_vcgt_cal`)
+    loader lines to Openbox's autostart (design §5.5) -- ONLY called when
+    the caller explicitly asked (`--write-autostart`); never as a side
+    effect of any other install step. Idempotent: a previous calsuite-
+    written marker block is replaced in place (start/end markers bound the
+    block so a 1-line or 2-line previous block is removed correctly either
+    way), not duplicated, on a second run.
     """
     report = InstallReport()
     autostart_path = Path(autostart_path)
@@ -206,15 +236,21 @@ def write_autostart_entry(icc_path: Path, *, autostart_path: Path = AUTOSTART_PA
     i = 0
     while i < len(lines):
         if lines[i].strip() == AUTOSTART_MARKER:
-            i += 2  # drop the marker and the loader line right after it
+            while i < len(lines) and lines[i].strip() != AUTOSTART_MARKER_END:
+                i += 1
+            i += 1  # drop the end marker itself too
             continue
         out_lines.append(lines[i])
         i += 1
 
-    new_line = f'dispwin -I "{icc_path}" &'
+    new_block = [AUTOSTART_MARKER, f'dispwin -I "{icc_path}" &']
+    if cal_path is not None:
+        new_block.append(f'dispwin "{cal_path}" &')
+    new_block.append(AUTOSTART_MARKER_END)
+
     while out_lines and out_lines[-1] == "":
         out_lines.pop()
-    out_lines += ["", AUTOSTART_MARKER, new_line]
+    out_lines += ["", *new_block]
     autostart_path.write_text("\n".join(out_lines).strip() + "\n", encoding="utf-8")
     report.add("openbox autostart", True, f"wrote {autostart_path}")
     return report
@@ -223,19 +259,26 @@ def write_autostart_entry(icc_path: Path, *, autostart_path: Path = AUTOSTART_PA
 def install(
     icc_path: Path,
     *,
+    cal_path: Path | None = None,
     write_autostart: bool = False,
     autostart_path: Path = AUTOSTART_PATH,
     colord_device: str | None = None,
     dispwin_display: int | None = None,
 ) -> InstallReport:
-    """Full Linux install path: colormgr, then `dispwin -I`, then (only if
+    """Full Linux install path: colormgr, then `dispwin -I`, then (if
+    `cal_path` is given) the VCGT curve load, then (only if
     `write_autostart`) the Openbox autostart entry. One combined report so
     `display/commands.py` can print exactly what was done, in order.
     ``colord_device``/``dispwin_display`` name which screen on a
-    multi-monitor machine -- see ``install_colormgr``."""
+    multi-monitor machine -- see ``install_colormgr``. ``cal_path`` is
+    `display.profile`'s own ``result["cal_path"]`` -- ``None`` when that
+    record's ``vcgt_note`` says why one couldn't be built, in which case
+    this simply skips the VCGT step, same as it always used to."""
     report = InstallReport()
     report.steps += install_colormgr(icc_path, device_path=colord_device).steps
     report.steps += install_dispwin(icc_path, display=dispwin_display).steps
+    if cal_path is not None:
+        report.steps += load_vcgt_cal(cal_path, display=dispwin_display).steps
     if write_autostart:
-        report.steps += write_autostart_entry(icc_path, autostart_path=autostart_path).steps
+        report.steps += write_autostart_entry(icc_path, cal_path=cal_path, autostart_path=autostart_path).steps
     return report

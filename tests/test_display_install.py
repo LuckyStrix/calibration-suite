@@ -38,6 +38,42 @@ def test_install_dispwin_success(fake_bin, tmp_path):
     assert report.ok
 
 
+def test_load_vcgt_cal_success(fake_bin, tmp_path):
+    fake_bin("dispwin", "")
+    report = install_linux.load_vcgt_cal(tmp_path / "vcgt.cal")
+    assert report.ok
+
+
+def test_install_full_linux_loads_vcgt_when_cal_path_given(fake_bin, tmp_path):
+    fake_bin("dispwin", "")
+    report = install_linux.install(tmp_path / "p.icc", cal_path=tmp_path / "p.cal")
+    step_names = [s["step"] for s in report.steps]
+    assert "dispwin <calfile>" in step_names
+
+    report_none = install_linux.install(tmp_path / "p.icc", cal_path=None)
+    assert "dispwin <calfile>" not in [s["step"] for s in report_none.steps]
+
+
+def test_write_autostart_entry_with_cal_path_writes_both_lines_and_is_idempotent(tmp_path):
+    autostart = tmp_path / "autostart"
+    install_linux.write_autostart_entry(tmp_path / "a.icc", cal_path=tmp_path / "a.cal", autostart_path=autostart)
+    first = autostart.read_text(encoding="utf-8")
+    assert "a.icc" in first
+    assert "a.cal" in first
+    assert first.count(install_linux.AUTOSTART_MARKER) == 1
+    assert first.count(install_linux.AUTOSTART_MARKER_END) == 1
+
+    # Idempotent even when the new call has *fewer* lines than the old
+    # block (no cal_path this time) -- the old 2-line block must be fully
+    # removed, not just partially overwritten.
+    install_linux.write_autostart_entry(tmp_path / "b.icc", cal_path=None, autostart_path=autostart)
+    second = autostart.read_text(encoding="utf-8")
+    assert "a.icc" not in second
+    assert "a.cal" not in second
+    assert "b.icc" in second
+    assert second.count(install_linux.AUTOSTART_MARKER) == 1
+
+
 def test_write_autostart_entry_is_idempotent(tmp_path):
     autostart = tmp_path / "autostart"
     install_linux.write_autostart_entry(tmp_path / "a.icc", autostart_path=autostart)

@@ -45,6 +45,20 @@ TRC_MIN_R2 = 0.9
 # sequence, a stuck patch), not a stricter goodness-of-fit gate on real
 # panels.
 
+VCGT_TARGET_GAMMA = 2.2
+# The canonical response `vcgt_correction` inverts each channel's measured
+# TRC against -- same conventional value `profile.build_fallback_matrix_trc`
+# already falls back to for a refused channel's ICC TRC tag, kept identical
+# here so the video-LUT correction and the ICC profile's own TRC target the
+# same curve rather than disagreeing on what "correct" means.
+
+VCGT_STEPS = 256
+# Argyll's own `dispcal`-written .cal files this size (an 8-bit LUT's worth
+# of entries); `dispwin` interpolates a .cal's curve onto whatever the
+# hardware LUT's actual depth is (confirmed 10-bit on this laptop's own
+# panel via its own "doesn't match actual 10" warning), so 256 points is
+# resolution to spare rather than a hardware assumption.
+
 UNIFORMITY_GRID_INSET = 0.12
 # How far in from each screen edge the outermost grid squares are centered
 # (as a fraction of width/height). The grid used to run 0.0..1.0, i.e. the

@@ -262,3 +262,41 @@ def test_trc_fit_drops_a_sub_black_step_instead_of_refusing_the_channel():
     assert result.result["steps_at_or_below_black"]["r"] == 0
     # The LUT keeps every step, floored at 0 -- never a negative entry.
     assert min(result.result["lut"]["b"]) >= 0.0
+
+
+def test_vcgt_correction_inverts_measured_response_to_target_gamma():
+    """Feeding `vcgt_correction`'s own curve value back into the display
+    model should make the *actual* light output follow the canonical
+    `x ** target_gamma` curve, regardless of the panel's real per-channel
+    gamma -- that's the entire point of a video-LUT correction."""
+    model = DisplayModel(gamma={"r": 1.8, "g": 2.4, "b": 2.0}, black_luminance_cdm2=0.0)
+    ramps = {ch: _ramp_data(model, ch) for ch in ("r", "g", "b")}
+    trc = analysis.trc_fit(ramps)
+    assert trc.ok
+
+    result = analysis.vcgt_correction(trc, target_gamma=2.2, steps=64)
+    assert result.ok
+    assert result.result["target_gamma"] == 2.2
+
+    idx = {"r": 0, "g": 1, "b": 2}
+    for ch, i in idx.items():
+        y_max = model.measure(tuple(1.0 if j == i else 0.0 for j in range(3)))[1]
+        for x, driven in zip(result.result["input_levels"], result.result["curves"][ch], strict=True):
+            rgb = [0.0, 0.0, 0.0]
+            rgb[i] = driven
+            y_norm = model.measure(tuple(rgb))[1] / y_max
+            assert y_norm == pytest.approx(x**2.2, abs=0.01)
+
+
+def test_vcgt_correction_refuses_when_a_channel_trc_was_refused():
+    """`trc_fit` leaves a refused channel out of `result["lut"]`/["levels"]
+    entirely -- a VCGT curve missing one of three channels would be a wrong
+    color cast on every non-color-managed pixel, not a smaller correction,
+    so this refuses outright rather than building two-thirds of a curve."""
+    trc = analysis.Analysis(result={
+        "lut": {"r": [0.0, 0.5, 1.0], "g": [0.0, 0.5, 1.0]},
+        "levels": {"r": [0.0, 0.5, 1.0], "g": [0.0, 0.5, 1.0]},
+    })
+    result = analysis.vcgt_correction(trc)
+    assert not result.ok
+    assert "b" in result.refusals[0].message
