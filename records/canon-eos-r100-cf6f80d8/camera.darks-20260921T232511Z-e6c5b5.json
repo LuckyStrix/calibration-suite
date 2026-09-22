@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "id": "camera.darks-20260921T232511Z-e6c5b5",
+  "kind": "camera.darks",
+  "device": {
+    "kind": "camera",
+    "model": "Canon EOS R100",
+    "id": "canon-eos-r100-cf6f80d8",
+    "firmware": ""
+  },
+  "devices": [],
+  "created": "20260921T232511Z",
+  "provenance": "measured",
+  "status": "refused",
+  "refusals": [
+    {
+      "check": "long_exposure_nr_on",
+      "message": "long-exposure noise reduction is enabled on one or more frames; it subtracts an in-camera dark from the raw data, so the raw signal no longer reflects the sensor's own dark current",
+      "value": true,
+      "threshold": false
+    }
+  ],
+  "conditions": {
+    "iso": 100,
+    "settings": {
+      "long_exposure_nr": true,
+      "high_iso_nr": false,
+      "highlight_tone_priority": false,
+      "shutter_mode": 1
+    }
+  },
+  "method": {
+    "name": "camera.darks",
+    "calsuite_version": "0.1.0",
+    "params": {}
+  },
+  "inputs": [
+    {
+      "name": "20260305_0001.CR3",
+      "sha256": "970242a3a31f83956a587ed33653d3292eca5de4a53ce0cafb7b5534e53506c5"
+    },
+    {
+      "name": "20260305_0050.CR3",
+      "sha256": "a9f743ae45c81e80f5cb202a736c37a0245087579d54ced4876edbb5a6a41f54"
+    },
+    {
+      "name": "20260305_0100.CR3",
+      "sha256": "f5e2a2b5dc7df58305c243a66a266d49bdd0976aec848a0a84d72178eebdd7a2"
+    },
+    {
+      "name": "20260305_0150.CR3",
+      "sha256": "9ede9c3376b713b93314a39331824ee6bf0b289e6c0e780fac1256a2eeae748f"
+    },
+    {
+      "name": "20260305_0200.CR3",
+      "sha256": "9650530f008f43d9f94cba773e67319c6626264159afc38e3f370a4db9a2c42f"
+    }
+  ],
+  "derived_from": [],
+  "result": {},
+  "residuals": {},
+  "uncertainty": {},
+  "artifacts": [
+    {
+      "name": "hot_pixels_2.5s",
+      "sha256": "a2ce5841a8aefb627d38c66ab22a1da60e8682f05535b5d5c01495f7ad8f8521"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "display.profile-20260922T194500Z-c20b23",
+  "kind": "display.profile",
+  "device": {
+    "kind": "display",
+    "model": "CSOT T3",
+    "id": "csot-t3-unknown",
+    "firmware": ""
+  },
+  "devices": [],
+  "created": "20260922T194500Z",
+  "provenance": "derived",
+  "status": "ok",
+  "refusals": [],
+  "conditions": {},
+  "method": {
+    "name": "calsuite.display.commands",
+    "calsuite_version": "0.1.0",
+    "params": {}
+  },
+  "inputs": [],
+  "derived_from": [
+    "display.measurement-20260922T194446Z-2e0063"
+  ],
+  "result": {
+    "path": "/home/carter/programmingExperiments/shared/calibration_suite/records/csot-t3-unknown/display-profile.icc",
+    "method": "colprof -as (matrix/shaper)",
+    "profcheck_ok": true
+  },
+  "residuals": {},
+  "uncertainty": {},
+  "artifacts": []
+}
