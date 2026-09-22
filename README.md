@@ -111,6 +111,10 @@ calsuite export icc --record records/<id>/camera.color-*.json --out camera-input
 ```sh
 calsuite display nominal                                        # EDID -> display.nominal (provenance "nominal")
 calsuite display measure --backend argyll --device-id <id>       # or --backend camera / spectro / synthetic
+                                                                 # argyll: calibrate the instrument at the terminal first, then the screen
+                                                                 # goes fullscreen. The last 25 patches are small white squares (uniformity):
+                                                                 # each one waits for you to put the instrument on it and press SPACE --
+                                                                 # the instructions are drawn on the screen, since the terminal is hidden.
 calsuite display profile --device-id <id> --out profile.icc
 calsuite display install --device-id <id>
 calsuite display validate --backend argyll --device-id <id>
@@ -203,6 +207,15 @@ Honestly, in one place:
   layouts and API behaviour, not run on a real Windows machine as part of
   this build — treat a mismatch as a detail to fix, not an architecture
   problem.
+- **The `argyll` backend's prompt protocol is verified only on Linux, with
+  a ColorMunki Photo.** `spotread` runs as one long-lived session under a
+  pty (`display/backends/spotread_session.py` has the real transcript);
+  Windows falls back to plain pipes, which works against the test fake but
+  is unverified against real ArgyllCMS (it reads the console API directly).
+  The *readings'* accuracy on this laptop panel is likewise unmeasured —
+  the ΔE00 figure on the record is the design's colorimeter estimate, and a
+  spectrophotometer without a display-specific correction can be off on a
+  white-LED backlight.
 - **The `camera` display-measurement backend** is only trustworthy once
   cross-checked against `argyll` or `spectro` on a real panel (design §5.1)
   — that cross-check hasn't happened yet.

@@ -34,23 +34,6 @@ def test_argyll_parse_xyz_raises_when_absent():
         argyllmod.parse_xyz("no reading here")
 
 
-def test_argyll_backend_measure_with_fake_spotread(fake_bin):
-    fake_bin("spotread", "print('Result is XYZ: 95.05, 100.00, 108.90, D50 Lab: 100 0 0')\n")
-    backend = argyllmod.ArgyllBackend()
-    results = backend.measure(patchesmod.primaries_secondaries()[:2])
-    assert len(results) == 2
-    assert results[0].xyz == pytest.approx(np.array([95.05, 100.00, 108.90]))
-
-
-def test_argyll_backend_missing_spotread_raises(monkeypatch):
-    from calsuite import tools
-
-    monkeypatch.setenv("PATH", "/nonexistent-bin-dir")
-    backend = argyllmod.ArgyllBackend()
-    with pytest.raises(tools.ToolError):
-        backend.measure_one()
-
-
 def test_argyll_backend_accuracy_reports_estimate():
     backend = argyllmod.ArgyllBackend(cross_checked_against="camera")
     acc = backend.accuracy()

@@ -45,6 +45,17 @@ TRC_MIN_R2 = 0.9
 # sequence, a stuck patch), not a stricter goodness-of-fit gate on real
 # panels.
 
+UNIFORMITY_GRID_INSET = 0.12
+# How far in from each screen edge the outermost grid squares are centered
+# (as a fraction of width/height). The grid used to run 0.0..1.0, i.e. the
+# corner squares were centered *on* the screen corners with three quarters
+# of each off-screen -- no instrument can sit on that. At 0.12 the corner
+# squares are fully on screen (needs inset >= UNIFORMITY_PATCH_SIZE_FRAC/2 =
+# 0.075 of the shorter side, with margin), and on a 344x215 mm panel their
+# centers are ~26 mm from the top/bottom edge, close to what a puck's own
+# body can still lie flat against. Still the outermost usable sample of the
+# panel: the far edge/corner falloff is what non-uniformity mostly is.
+
 UNIFORMITY_PATCH_SIZE_FRAC = 0.15
 # Small enough that a uniformity grid position genuinely samples the panel
 # area under it (not most of the screen), big enough that a colorimeter
@@ -126,9 +137,16 @@ VALIDATION_MAX_DE00_MULTIPLIER = 4.0
 # -- subprocess timeouts ------------------------------------------------------
 
 SPOTREAD_TIMEOUT_S = 60.0
-# One spotread invocation covers instrument positioning plus a real
-# integration time, longer than tools.DEFAULT_TIMEOUT_S's generic 30s
-# (chosen for quick version/identify-style calls).
+# One reading: a real integration time (a spectrophotometer takes several
+# seconds on a dark patch), longer than tools.DEFAULT_TIMEOUT_S's generic 30s
+# (chosen for quick version/identify-style calls). Human waits are not
+# counted against it -- those happen at prepare(), outside any timeout.
+
+SPOTREAD_STARTUP_TIMEOUT_S = 30.0
+# Connecting to the instrument and running its calibration, from the moment
+# the human confirms the dial is in position to the next prompt. A real
+# ColorMunki Photo did this in a few seconds; 30s leaves room for a slow USB
+# enumeration without hiding a wedged instrument.
 
 COLPROF_TIMEOUT_S = 120.0
 # colprof builds a profile from potentially 100+ patches; matrix/shaper

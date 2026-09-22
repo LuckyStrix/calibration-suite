@@ -33,6 +33,8 @@ class Patch:
     ``size_frac``: fraction of the shorter screen dimension the patch
     square covers; 1.0 (full screen) for everything except uniformity,
     which needs a genuinely local sample.
+    ``placement``: see the field's own comment; set only by
+    ``uniformity_grid``.
     ``lab_target``: target CIE Lab, referenced to the same white used to
     build the display's ICC profile (D50, matching the ICC PCS -- see
     ``formats/icc.py``'s ``ICC_PCS_ILLUMINANT_D50``), for the validation set.
@@ -43,6 +45,12 @@ class Patch:
     size_frac: float = 1.0
     label: str = ""
     lab_target: tuple | None = None
+    placement: str | None = None
+    # ``None`` for a patch that fills the screen -- the instrument can sit
+    # anywhere on it. Otherwise a human-readable "where" (``"row 2 of 5,
+    # column 4 of 5"``): this patch is a small square the instrument has to
+    # be *moved onto*, so a run driving a real instrument must stop and wait
+    # for a person before measuring it.
 
 
 def channel_ramp(channel: str, steps: int = dc.RAMP_STEPS_DEFAULT) -> list:
@@ -95,15 +103,17 @@ def additivity_set() -> list:
 
 
 def uniformity_grid(n: int = dc.UNIFORMITY_GRID_N, rgb: tuple = (1.0, 1.0, 1.0)) -> list:
-    """An n x n grid of `rgb` patches (design §5.2's 5x5 default) spanning
-    the screen edge-to-edge (fractional positions from 0.0 to 1.0
-    inclusive, so the grid includes the corners, where non-uniformity is
-    usually worst, not just interior points). Returned row-major, shape
-    (n, n), matching what ``display.analysis.uniformity`` expects; index
+    """An n x n grid of `rgb` patches (design §5.2's 5x5 default) covering
+    the panel from ``UNIFORMITY_GRID_INSET`` in from one edge to the same
+    distance in from the other, so the outermost squares (the corners, where
+    non-uniformity is usually worst) are still fully on screen and an
+    instrument can be put on them. Returned row-major, shape (n, n),
+    matching what ``display.analysis.uniformity`` expects; index
     [n // 2][n // 2] is the center cell it compares every other cell
-    against.
+    against (an odd n keeps it at exactly (0.5, 0.5)).
     """
-    positions = [i / (n - 1) if n > 1 else 0.5 for i in range(n)]
+    lo, hi = dc.UNIFORMITY_GRID_INSET, 1.0 - dc.UNIFORMITY_GRID_INSET
+    positions = [lo + (hi - lo) * i / (n - 1) if n > 1 else 0.5 for i in range(n)]
     grid = []
     for yi, y in enumerate(positions):
         row = []
@@ -114,6 +124,7 @@ def uniformity_grid(n: int = dc.UNIFORMITY_GRID_N, rgb: tuple = (1.0, 1.0, 1.0))
                     position=(x, y),
                     size_frac=dc.UNIFORMITY_PATCH_SIZE_FRAC,
                     label=f"uniformity-{yi}-{xi}",
+                    placement=f"row {yi + 1} of {n}, column {xi + 1} of {n}",
                 )
             )
         grid.append(row)

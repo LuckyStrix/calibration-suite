@@ -264,12 +264,39 @@ def _measure_via_backend(args, patches: list, *, store: storemod.Store):
         from calsuite.display import window as windowmod
         from calsuite.display.backends.argyll import ArgyllBackend
 
-        screen = windowmod.open_window(args.width, args.height, fullscreen=not args.windowed)
+        from calsuite import tools
+        from calsuite.display.backends.spotread_session import SessionAborted
+
+        backend = ArgyllBackend()
         try:
-            backend = ArgyllBackend()
-            return backend.measure_via_window(screen, patches, sleep=None), backend.accuracy()
-        finally:
-            windowmod.close_window()
+            # Calibrate *before* the window opens: the instrument's own
+            # prompts (dial position) need a human who can still see the
+            # terminal.
+            with backend.session() as session:
+                print(
+                    "\nInstrument ready. Place it on the screen, facing the panel (the screen will then be "
+                    "covered by full-screen patches).\nESC aborts the run."
+                )
+                if any(p.placement for p in patches):
+                    n_sq = sum(1 for p in patches if p.placement)
+                    print(
+                        f"\nNear the end there are {n_sq} small white squares (the uniformity test). For each one, "
+                        "move the instrument onto it and press SPACE -- the instructions are shown on the screen, "
+                        "not here."
+                    )
+                input("  >> Press Enter to start measuring: ")
+                screen = windowmod.open_window(args.width, args.height, fullscreen=not args.windowed)
+                try:
+                    measurements = backend.measure_via_window(screen, patches, session, sleep=None)
+                finally:
+                    windowmod.close_window()
+        except (windowmod.WindowAborted, SessionAborted, tools.ToolError, KeyboardInterrupt) as exc:
+            # An aborted or failed *attempt* is not a measurement: nothing
+            # was analysed, so there is nothing to refuse -- say why and stop
+            # without a traceback.
+            print(f"\nmeasurement stopped: {exc or type(exc).__name__}", file=sys.stderr)
+            sys.exit(1)
+        return measurements, backend.accuracy()
 
     if name == "camera":
         return _measure_via_camera(args, patches, store=store)

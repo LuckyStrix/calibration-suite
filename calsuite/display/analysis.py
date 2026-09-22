@@ -300,7 +300,7 @@ def uniformity(grid_xyz) -> Analysis:
         return analysis
     n = grid.shape[0]
     if n % 2 == 0:
-        # `patches.uniformity_grid` spans the screen edge-to-edge, so only
+        # `patches.uniformity_grid` spans the panel symmetrically about its center, so only
         # an odd n has a cell at the screen's center; for an even n,
         # grid[n // 2, n // 2] is an off-center cell being reported as
         # "the center" every other cell is compared against.
