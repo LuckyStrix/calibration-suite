@@ -182,15 +182,22 @@ every measurement — tethering is the only OS-specific convenience.
 
 Honestly, in one place:
 
-- **No real measurements yet.** Every analysis has a synthetic round trip
-  (house rule 4) and passes it; none has been run against a real Canon
-  R100, a real lens, or a real display. The one real record in this repo
-  (`records/csot-t3-unknown/display.nominal-*.json`) is an EDID read —
-  `nominal` provenance, no fit, no camera involved.
-  `docs/implementation-plan.md`'s "local-only smoke tests" section names
-  what still needs running by hand on this machine (`calsuite devices`
-  against the real eDP EDID; `raw.load()` against a real `.cr3`; a lensfun
-  export compared against the installed `mil-canon.xml`).
+- **The display side has real measurements now; the camera and lens sides
+  don't.** `records/csot-t3-unknown/` has a real measure → profile → report
+  pass against this laptop's panel (`measured`/`derived`, `status="ok"`)
+  plus a VCGT-bearing ICC profile. The one `display.validation` record on
+  file predates that profile, though — it validated the profile build
+  before the VCGT correction fix, not the current one — so `calsuite
+  doctor` correctly flags the current profile as unvalidated; rerun
+  `calsuite display validate` against it before trusting it end to end.
+  The camera side has one real capture attempt —
+  `records/canon-eos-r100-cf6f80d8/camera.darks-*.json` — but it's
+  `status="refused"` (long-exposure NR was on for the series), so no
+  camera number has cleared its own checks yet. No lens has been shot at
+  all. `docs/implementation-plan.md`'s "local-only smoke tests" section
+  names what's still outstanding: a lensfun export compared against the
+  installed `mil-canon.xml`, and (now that dark frames exist) a PTC/
+  linearity/ISO-invariance pass with LENR off.
 - **Canon EDSDK** (Windows tethered capture) — needs a Canon developer
   registration; manual import covers Windows fully in the meantime.
 - **A `dispcal`-style VCGT calibration loop** (target white point + gamma →
