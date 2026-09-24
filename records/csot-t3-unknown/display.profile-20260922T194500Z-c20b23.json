@@ -24,7 +24,7 @@
     "display.measurement-20260922T194446Z-2e0063"
   ],
   "result": {
-    "path": "/home/carter/programmingExperiments/shared/calibration_suite/records/csot-t3-unknown/display-profile.icc",
+    "path": "csot-t3-unknown/display-profile.icc",
     "method": "colprof -as (matrix/shaper)",
     "profcheck_ok": true
   },
