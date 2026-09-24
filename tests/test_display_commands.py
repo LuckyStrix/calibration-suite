@@ -161,3 +161,41 @@ def test_nominal_writes_record_from_edid_fixture(tmp_path, monkeypatch):
     assert len(records) == 1
     assert records[0].provenance == "nominal"
     assert records[0].result["chromaticity"]["r"] == pytest.approx([0.638, 0.334], abs=1e-3)
+
+
+def test_profile_record_paths_are_relative_to_the_records_dir(tmp_path, monkeypatch):
+    """A committed record must not embed the local checkout's absolute path
+    (username leak, and it breaks after the repo moves)."""
+    monkeypatch.setenv("CALSUITE_RECORDS", str(tmp_path))
+    device_id = "portable-paths-display"
+    assert cli.main(["display", "measure", "--backend", "synthetic", "--device-id", device_id, "--steps", "9"]) == 0
+    assert cli.main(["display", "profile", "--device-id", device_id]) == 0
+
+    record = storemod.Store(tmp_path).latest("display.profile", device_id)
+    assert record.result["path"] == f"{device_id}/display-profile.icc"
+    assert not Path(record.result["path"]).is_absolute()
+    # ...and validate still finds the profile through the relative path.
+    assert cli.main(["display", "validate", "--backend", "synthetic", "--device-id", device_id]) == 0
+
+
+def test_display_install_goes_through_require_exportable(tmp_path, monkeypatch, capsys):
+    """install used to check only status == 'ok'; a profile whose provenance
+    is not exportable must be refused by the same gate every export uses."""
+    monkeypatch.setenv("CALSUITE_RECORDS", str(tmp_path))
+    device_id = "install-gate-display"
+    assert cli.main(["display", "measure", "--backend", "synthetic", "--device-id", device_id, "--steps", "9"]) == 0
+    assert cli.main(["display", "profile", "--device-id", device_id]) == 0
+
+    st = storemod.Store(tmp_path)
+    record = st.latest("display.profile", device_id)
+    record.provenance = "nominal"
+    st.save(record)
+    assert st.latest("display.profile", device_id).provenance == "nominal"
+
+    called = []
+    from calsuite.display import install_linux
+    monkeypatch.setattr(install_linux, "install", lambda *a, **k: called.append(a))
+
+    assert cli.main(["display", "install", "--device-id", device_id]) == 1
+    assert "provenance" in capsys.readouterr().out
+    assert not called

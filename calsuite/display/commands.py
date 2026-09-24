@@ -139,6 +139,27 @@ def _store() -> storemod.Store:
     return storemod.Store(config.records_dir())
 
 
+def _portable_path(path: Path | None) -> str | None:
+    """A path for a committed record: relative (posix) to the records dir when
+    it lives inside it, so the record carries no username or checkout
+    location and still resolves after the repo moves; absolute only for a
+    ``--out`` outside the store."""
+    if path is None:
+        return None
+    try:
+        return Path(path).resolve().relative_to(config.records_dir().resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _resolve_record_path(value: str | None) -> str | None:
+    """Inverse of ``_portable_path``: a relative path is under the records dir."""
+    if value is None:
+        return None
+    p = Path(value)
+    return str(p if p.is_absolute() else config.records_dir() / p)
+
+
 # ---------------------------------------------------------------------------
 # nominal
 # ---------------------------------------------------------------------------
@@ -565,10 +586,10 @@ def _cmd_profile(args) -> int:
         return 1
 
     analysis = Analysis(result={
-        "path": str(result.path),
+        "path": _portable_path(result.path),
         "method": result.method,
         "profcheck_ok": result.profcheck_ok,
-        "cal_path": str(result.cal_path) if result.cal_path else None,
+        "cal_path": _portable_path(result.cal_path),
         "vcgt_note": result.vcgt_note,
     })
     record = storemod.Record.from_analysis(
@@ -594,11 +615,16 @@ def _cmd_install(args) -> int:
     store = _store()
     device = _resolve_device(args.device_id)
     profile_record = store.latest("display.profile", device["id"])
-    if profile_record is None or profile_record.status != "ok":
-        print(f"no passing display.profile record for device {device['id']!r}")
+    if profile_record is None:
+        print(f"no display.profile record for device {device['id']!r}")
         return 1
-    icc_path = profile_record.result["path"]
-    cal_path = profile_record.result.get("cal_path")
+    try:
+        storemod.require_exportable(profile_record)
+    except storemod.ExportRefused as exc:
+        print(f"refused: {exc}")
+        return 1
+    icc_path = _resolve_record_path(profile_record.result["path"])
+    cal_path = _resolve_record_path(profile_record.result.get("cal_path"))
 
     if sys.platform == "win32":
         report = install_windows.install(icc_path, cal_path=cal_path)
@@ -672,7 +698,7 @@ def _cmd_validate(args) -> int:
 
     lab_patches = patchesmod.validation_set()
     lab_targets = [p.lab_target for p in lab_patches]
-    rgb_values = validatemod.lab_to_rgb_via_profile(profile_record.result["path"], lab_targets)
+    rgb_values = validatemod.lab_to_rgb_via_profile(_resolve_record_path(profile_record.result["path"]), lab_targets)
     patches_to_show = [
         patchesmod.Patch(rgb=rgb, label=p.label, lab_target=p.lab_target) for p, rgb in zip(lab_patches, rgb_values, strict=True)
     ]
