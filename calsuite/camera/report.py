@@ -75,6 +75,15 @@ def _read_noise_vs_iso_section(iso_record) -> dict | None:
     )
     recommended = iso_record.result.get("recommended_iso")
     note = f"<p>Recommended ISO: <strong>{recommended}</strong></p>" if recommended is not None else ""
+    for sw in iso_record.result.get("possible_conversion_gain_switches") or []:
+        note += (
+            f"<p>Possible dual conversion gain switch between ISO {sw['from_iso']} and {sw['to_iso']} "
+            f"(read noise drops {sw['read_noise_drop_log2_per_stop']:.2f} log2 per stop there, "
+            "far more than its neighbouring steps).</p>"
+        )
+    caveat = iso_record.result.get("conversion_gain_switch_caveat")
+    if caveat:
+        note += f"<p><em>{caveat}</em></p>"
     return {"heading": "ISO invariance", "html": chart + note}
 
 

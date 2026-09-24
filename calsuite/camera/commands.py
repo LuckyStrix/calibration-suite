@@ -543,6 +543,13 @@ def _cmd_iso(args) -> int:
     # and a reader of the recommendation should be able to tell them apart.
     if read_noise_source_by_iso:
         analysis.result["read_noise_source_by_iso"] = read_noise_source_by_iso
+        if analysis.result.get("possible_conversion_gain_switches") and len(set(read_noise_source_by_iso.values())) > 1:
+            # A step between two ISOs measured by different methods (bias-pair
+            # vs PTC intercept) can be the change of method, not the sensor.
+            analysis.result["conversion_gain_switch_caveat"] = (
+                "read noise came from more than one method across the sweep; re-measure every ISO the "
+                "same way before trusting a switch"
+            )
 
     # Device identity for the record we're about to save either way -- an
     # empty sweep (no camera.ptc run yet at all) still gets one, so prefer

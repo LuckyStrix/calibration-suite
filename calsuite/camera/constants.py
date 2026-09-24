@@ -167,6 +167,21 @@ ISO_INVARIANCE_TOLERANCE_PCT = 5.0
 # there's no point recommending a *higher* ISO to chase a read-noise
 # difference finer than the suite's own read-noise measurement can resolve.
 
+CG_SWITCH_MIN_DROP_LOG2_PER_STOP = 0.3
+# A step between adjacent ISOs is only a candidate dual-conversion-gain
+# switch if read noise (e-) falls by at least this many log2 units *per stop
+# of ISO* across it (0.3 ~ a 19% drop per stop). Ordinary analog-gain
+# improvement is smaller than this once past the first stop or two; a real
+# switch roughly halves read noise in one step (~1.0).
+
+CG_SWITCH_SPIKE_RATIO = 3.0
+# ...and that step's per-stop drop must also be at least this many times
+# larger than the drop across each neighbouring step. A discontinuity is a
+# spike in the drop sequence; a smooth falling-then-flat curve
+# (e.g. 0.51, 0.44, 0.31, 0.03 per stop) has no step 3x its neighbour, so it
+# is never flagged. With only 2-3 ISOs a steep genuine fall can still look
+# like a spike, which is why the result is advisory, not a refusal.
+
 ISO_MIN_COUNT = 3
 # Need at least 3 ISOs to distinguish "still falling" from "has flattened" --
 # 2 points are always monotonic.

@@ -84,3 +84,28 @@ def test_refuses_a_non_positive_read_noise_instead_of_recommending_that_iso():
     ok = iso.analyze_iso_invariance({100: 4.1, 400: 3.2, 1600: 2.9}, 40000.0)
     assert ok.ok
     assert ok.result["recommended_iso"] == 1600
+
+
+def test_a_step_in_read_noise_is_flagged_as_a_conversion_gain_switch():
+    # Flat, then halved in one step, then flat: the dual-gain signature.
+    a = iso.analyze_iso_invariance({100: 3.0, 200: 3.0, 400: 3.0, 800: 1.5, 1600: 1.45, 3200: 1.4}, 40000.0)
+    assert a.ok, a.refusals
+    switches = a.result["possible_conversion_gain_switches"]
+    assert [(s["from_iso"], s["to_iso"]) for s in switches] == [(400, 800)]
+    assert switches[0]["read_noise_drop_log2_per_stop"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_a_smooth_falling_then_flat_curve_is_not_flagged():
+    a = iso.analyze_iso_invariance(
+        {100: 6.0, 200: 4.2, 400: 3.1, 800: 2.5, 1600: 2.45, 3200: 2.42, 6400: 2.40}, 40000.0
+    )
+    assert a.result["possible_conversion_gain_switches"] == []
+
+
+def test_a_switch_is_found_when_isos_are_unevenly_spaced():
+    # 400 -> 1600 is two stops; halving read noise across it is 0.5 log2/stop
+    # between flat neighbours, still a spike -- and normalised per stop, not per step.
+    a = iso.analyze_iso_invariance({100: 3.0, 400: 3.0, 1600: 1.5, 6400: 1.5}, 40000.0)
+    (sw,) = a.result["possible_conversion_gain_switches"]
+    assert (sw["from_iso"], sw["to_iso"]) == (400, 1600)
+    assert sw["read_noise_drop_log2_per_stop"] == pytest.approx(0.5, abs=0.01)
