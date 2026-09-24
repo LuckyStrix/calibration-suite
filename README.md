@@ -79,8 +79,8 @@ calsuite camera ptc --from ~/calsuite-captures/ptc/            # gain, read nois
 calsuite camera linearity --from ~/calsuite-captures/flats/    # full well, linear range
 calsuite camera darks --from ~/calsuite-captures/darks/        # dark current, hot pixels, star-eater check
 calsuite camera fixed-pattern --from ~/calsuite-captures/fpn/  # DSNU, PRNU, banding (darks + flats + biases in one folder)
-calsuite camera iso --device-id <id>                           # ISO invariance, from the bias/ptc/linearity records above
-calsuite camera report --device-id <id> --out sensor.html
+calsuite camera iso                                                 # ISO invariance, from the bias/ptc/linearity records above
+calsuite camera report                      # --device-id <id> only if you have several cameras
 ```
 
 **Lens** (needs a ChArUco target — printed, or displayed full-screen):

@@ -87,6 +87,31 @@ def _gain_from_store(st: store.Store, device_id: str, *, iso=None):
     return gains or None
 
 
+_SENSOR_KINDS = (
+    "camera.bias", "camera.ptc", "camera.linearity", "camera.darks", "camera.iso", "camera.shutter",
+    "camera.fixed_pattern",
+)
+
+
+def _resolve_device_id(args, st: store.Store) -> str | None:
+    """``--device-id`` if given; otherwise the one camera that has sensor
+    records in the store. Every capture command prints its device id, but
+    needing to copy it into ``iso``/``report`` by hand is friction when
+    there is only one camera -- with several, list them and ask."""
+    if getattr(args, "device_id", None):
+        return args.device_id
+    found = {r.device["id"] for r in st.all() if r.kind in _SENSOR_KINDS}
+    if len(found) == 1:
+        (device_id,) = found
+        print(f"using device {device_id}")
+        return device_id
+    if not found:
+        print("no camera sensor records yet -- run `calsuite camera bias --from DIR` first")
+    else:
+        print("more than one camera has records; pass --device-id with one of: " + ", ".join(sorted(found)))
+    return None
+
+
 def _print_refusals(analysis) -> None:
     for r in analysis.refusals:
         print(f"REFUSED [{r.check}]: {r.message}")
@@ -130,7 +155,7 @@ def _save(
     )
     path = st.save(record, artifacts=artifacts)
     _print_refusals(analysis)
-    print(f"{'ok' if analysis.ok else 'refused'}: {kind} -> {path}")
+    print(f"{'ok' if analysis.ok else 'refused'}: {kind} (device {device_ref.id}) -> {path}")
     return 0 if analysis.ok else 1
 
 
@@ -212,6 +237,11 @@ def _cmd_bias(args) -> int:
         gain = _gain_from_store(st, device_ref.id, iso=iso_value)
         if analysis.ok and gain is not None:
             bias.add_read_noise_electrons(analysis, gain)
+        elif analysis.ok:
+            print(
+                f"note: no camera.ptc record for ISO {iso_value} yet, so read noise is in DN only; "
+                "`camera iso` converts it to electrons once a PTC exists for that ISO"
+            )
         conditions = {"iso": iso_value, "settings": settings.summarize(frames)}
         rc |= _save(
             st,
@@ -474,6 +504,9 @@ def _cmd_iso(args) -> int:
     from calsuite.camera import iso
 
     st = _store()
+    args.device_id = _resolve_device_id(args, st)
+    if args.device_id is None:
+        return 1
     all_ptc_records = list(st.all(kind="camera.ptc", device_id=args.device_id))
     ptc_records_ok = [r for r in all_ptc_records if r.status == "ok"]
 
@@ -508,6 +541,14 @@ def _cmd_iso(args) -> int:
             continue
         iso_value = r.conditions.get("iso")
         rn = [v for v in (r.result.get("read_noise_e") or {}).values() if v is not None and v > 0]
+        if iso_value is not None and not rn:
+            # Bias was run before this ISO's PTC existed, so it only has DN.
+            # The gain is on record now: convert here instead of making the
+            # user re-run `camera bias` (run order shouldn't matter).
+            gain = _gain_from_store(st, args.device_id, iso=iso_value)
+            dn = r.result.get("read_noise_dn") or {}
+            if gain:
+                rn = [v * gain[ch] for ch, v in dn.items() if v and ch in gain and gain[ch] > 0]
         if iso_value is not None and rn:
             read_noise_e_by_iso[iso_value] = max(rn)
             read_noise_source_by_iso[iso_value] = "camera.bias (bias-pair difference)"
@@ -579,10 +620,10 @@ def _cmd_report(args) -> int:
     from calsuite.camera import report
 
     st = _store()
-    kinds = (
-        "camera.bias", "camera.ptc", "camera.linearity", "camera.darks", "camera.iso", "camera.shutter",
-        "camera.fixed_pattern",
-    )
+    args.device_id = _resolve_device_id(args, st)
+    if args.device_id is None:
+        return 1
+    kinds = _SENSOR_KINDS
     latest = {kind: st.latest(kind, args.device_id) for kind in kinds}
     device = None
     for r in latest.values():
@@ -603,11 +644,13 @@ def _cmd_report(args) -> int:
         shutter_record=latest["camera.shutter"],
         fixed_pattern_record=latest["camera.fixed_pattern"],
     )
-    if args.out:
-        Path(args.out).write_text(html, encoding="utf-8")
-        print(f"wrote {args.out}")
-    else:
+    if args.out == "-":
         print(html)
+        return 0
+    out_path = Path(args.out) if args.out else config.records_dir() / args.device_id / "sensor-report.html"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html, encoding="utf-8")
+    print(f"wrote {out_path}")
     return 0
 
 
@@ -618,12 +661,36 @@ def _add_common_capture_args(p: argparse.ArgumentParser, subcommand_name: str) -
     p.add_argument("--from", dest="from_dir", default=None, help="folder of already-captured raw files")
     p.add_argument("--capture", action="store_true", help="guided tethered capture via gphoto2 first")
     p.add_argument("--count", type=int, default=10, help="frames to capture when --capture is given")
-    p.add_argument("--iso", dest="iso_range", default=None, help="ISO range for guided capture, e.g. 100..6400")
     p.set_defaults(subcommand_name=subcommand_name)
 
 
+_WORKFLOW_EPILOG = """\
+typical order (each step takes --from DIR, a folder of raw files; the frames'
+roles -- bias, dark, flat -- are detected from their exposure data):
+
+  1. bias          cap on, shortest exposure, at each ISO you care about
+  2. ptc           pairs of flats at ~20-30 light levels, per ISO
+  3. linearity     flat exposure series up to clipping
+  4. darks         long darks; vary ambient temperature for dark current
+  5. fixed-pattern darks + flats + bias in one folder      (optional)
+  6. shutter/bulb  timing checks                            (optional)
+  7. iso           no capture: combines steps 1-3 across ISOs
+  8. report        writes records/<device>/sensor-report.html
+  then `camera color ...` for colour (needs a chart or spectral data).
+
+Each command prints the device id it recorded under; `iso` and `report`
+use the only camera with records unless you pass --device-id. A refused
+record is saved with its reason -- read it before trusting the numbers.
+"""
+
+
 def register(subparsers) -> None:
-    parser = subparsers.add_parser("camera", help="camera sensor + color calibration")
+    parser = subparsers.add_parser(
+        "camera",
+        help="camera sensor + color calibration",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_WORKFLOW_EPILOG,
+    )
     camera_subparsers = parser.add_subparsers(dest="camera_command")
     parser.set_defaults(func=lambda args: parser.print_help() or 1)
 
@@ -659,12 +726,12 @@ def register(subparsers) -> None:
     p.set_defaults(func=_cmd_bulb)
 
     p = camera_subparsers.add_parser("iso", help="ISO invariance + engineering dynamic range")
-    p.add_argument("--device-id", required=True)
+    p.add_argument("--device-id", default=None, help="default: the only camera with sensor records")
     p.set_defaults(func=_cmd_iso)
 
     p = camera_subparsers.add_parser("report", help="render the sensor HTML report")
-    p.add_argument("--device-id", required=True)
-    p.add_argument("--out", default=None, help="write to this path instead of stdout")
+    p.add_argument("--device-id", default=None, help="default: the only camera with sensor records")
+    p.add_argument("--out", default=None, help="output path (default: records/<device>/sensor-report.html; '-' for stdout)")
     p.set_defaults(func=_cmd_report)
 
     color_commands.register(camera_subparsers)
