@@ -72,21 +72,41 @@ def _tca_section(record) -> str:
     return svg.line_chart(series, title="Lateral chromatic aberration", x_label="radius (G, px)", y_label="offset (px)")
 
 
-def _flats_section(records_by_aperture: dict) -> str:
-    if not records_by_aperture:
+def _flats_label(record) -> str:
+    """``f/2.8``, plus focal length / focus distance when the record has them,
+    so two flats at the same aperture but a different zoom stay distinguishable."""
+    c = record.conditions
+    label = f"f/{c.get('aperture')}"
+    if c.get("focal_mm"):
+        label += f" @ {c['focal_mm']:g} mm"
+    if c.get("focus_distance_m") is not None:
+        label += f", {c['focus_distance_m']:g} m"
+    return label
+
+
+def _flats_section(records_by_condition: dict) -> str:
+    if not records_by_condition:
         return ""
     r = np.linspace(0.0, 1.2, 60)
     series = []
-    for aperture, record in sorted(records_by_aperture.items()):
+    ordered = sorted(
+        records_by_condition.values(),
+        key=lambda rec: (
+            rec.conditions.get("focal_mm") or 0.0,
+            rec.conditions.get("aperture") or 0.0,
+            rec.conditions.get("focus_distance_m") or 0.0,
+        ),
+    )
+    for record in ordered:
         v_coeffs = record.result.get("v_coeffs")
         if not v_coeffs:
             continue
         pa = fit_pa(v_coeffs)
         v_of_r = 1.0 + pa["k1"] * r**2 + pa["k2"] * r**4 + pa["k3"] * r**6
-        series.append({"name": f"f/{aperture}", "x": r.tolist(), "y": v_of_r.tolist()})
+        series.append({"name": _flats_label(record), "x": r.tolist(), "y": v_of_r.tolist()})
     if not series:
         return ""
-    return svg.line_chart(series, title="Vignetting per aperture (pa model)", x_label="r (1 = corner)", y_label="V(r)")
+    return svg.line_chart(series, title="Vignetting (pa model)", x_label="r (1 = corner)", y_label="V(r)")
 
 
 def _mtf_section(record) -> str:
@@ -132,7 +152,7 @@ def render_lens_report(
     device: dict,
     distortion_record=None,
     tca_record=None,
-    flats_records_by_aperture: dict | None = None,
+    flats_records_by_condition: dict | None = None,
     mtf_record=None,
     psf_record=None,
     vendor_comparison: dict | None = None,
@@ -152,8 +172,8 @@ def render_lens_report(
         )
     if tca_record is not None:
         sections.append({"heading": "Chromatic aberration", "html": _tca_section(tca_record)})
-    if flats_records_by_aperture:
-        sections.append({"heading": "Vignetting", "html": _flats_section(flats_records_by_aperture)})
+    if flats_records_by_condition:
+        sections.append({"heading": "Vignetting", "html": _flats_section(flats_records_by_condition)})
     if mtf_record is not None:
         sections.append({"heading": "Sharpness (MTF50)", "html": _mtf_section(mtf_record)})
     if psf_record is not None:

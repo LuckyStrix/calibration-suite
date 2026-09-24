@@ -112,7 +112,7 @@ def test_lens_flats_omits_distance_attribute_when_none_was_given(tmp_path, monke
     assert "distance=" not in xml_text
 
 
-def _save_ok_flats_record(records_dir, *, aperture: float = 1.8) -> None:
+def _save_ok_flats_record(records_dir, *, aperture: float = 1.8, focal_mm: float = 50.0) -> None:
     st = store.Store(records_dir)
     analysis = Analysis(
         result={
@@ -131,7 +131,7 @@ def _save_ok_flats_record(records_dir, *, aperture: float = 1.8) -> None:
         analysis=analysis,
         provenance="measured",
         method={"name": "flats.self_calibrate_flat"},
-        conditions={"focal_mm": 50.0, "aperture": aperture},
+        conditions={"focal_mm": focal_mm, "aperture": aperture},
     )
     # Mirrors what `_cmd_flats` adds after a successful fit (lens/commands.py):
     # the refit-to-lensfun's-"pa"-model dict, computed from v_coeffs.
@@ -262,3 +262,28 @@ def test_lens_flats_subtracts_the_black_pedestal_before_fitting(tmp_path, monkey
     # Corner vignetting at r=1, the number that reaches the lensfun export.
     corner = 1.0 + v_coeffs[0] + v_coeffs[1]
     assert corner == pytest.approx(0.70, abs=0.03)  # un-subtracted, this read 0.85
+
+
+def test_flats_at_the_same_aperture_but_different_focal_lengths_are_both_exported(tmp_path, monkeypatch):
+    """Regression: the latest-flats collection was keyed by aperture alone, so
+    on a zoom a later f/4 flat at 70 mm silently replaced the one at 24 mm and
+    only one <vignetting> element reached the lensfun XML."""
+    records_dir = tmp_path / "records"
+    monkeypatch.setenv("CALSUITE_RECORDS", str(records_dir))
+    _save_ok_flats_record(records_dir, aperture=4.0, focal_mm=24.0)
+    _save_ok_flats_record(records_dir, aperture=4.0, focal_mm=70.0)
+
+    out_path = tmp_path / "out.xml"
+    rc = cli.main(["lens", "export", "--device-id", "test-lens-50mm-unknown",
+                   "--lens-model", "Test Lens 24-70mm", "--out", str(out_path)])
+    assert rc == 0
+    xml_text = out_path.read_text(encoding="utf-8")
+    assert xml_text.count("<vignetting") == 2
+    assert 'focal="24.0"' in xml_text and 'focal="70.0"' in xml_text
+
+    report_path = tmp_path / "report.html"
+    rc = cli.main(["lens", "report", "--device-id", "test-lens-50mm-unknown",
+                   "--lens-model", "Test Lens 24-70mm", "--out", str(report_path)])
+    assert rc == 0
+    html = report_path.read_text(encoding="utf-8")
+    assert "24 mm" in html and "70 mm" in html
