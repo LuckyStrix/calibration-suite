@@ -105,6 +105,16 @@ class NeedsRecalibration(tools.ToolError):
     show why, indistinguishable from a genuine freeze."""
 
 
+class DeadReading(tools.ToolError):
+    """spotread reported a reading of *exactly* zero in X, Y and Z. A real
+    instrument on a real panel -- even an LCD showing black -- reads small
+    nonzero noise, so exact zeros mean the sensor saw nothing: on a unit
+    whose dial-position report is stale, that is the dial sitting at the
+    calibration position (spotread cannot tell, and does not complain: it
+    prints the zeros as a normal result). Subclasses ``ToolError`` so the
+    command layer stops cleanly with the message."""
+
+
 def _clean(text: str) -> str:
     lines = [ln.rstrip() for ln in text.replace("\r", "").split("\n")]
     return "\n".join(ln for ln in lines if ln.strip())
@@ -221,11 +231,12 @@ class SpotreadSession:
 
     # -- the two phases ------------------------------------------------
 
-    def prepare(self, say=None, ask=None) -> None:
+    def prepare(self, say=None, ask=None) -> int:
         """Get spotread to its idle "take a reading" prompt, relaying every
         prompt that needs the human (dial position, mostly) through
         ``say``/``ask``. Run this **before** any patch window opens -- the
-        person must be able to see the terminal."""
+        person must be able to see the terminal. Returns how many
+        prompts were relayed (0 = it was already calibrated)."""
         say, ask = say or print, ask or input
         actions = 0
         while True:
@@ -234,7 +245,7 @@ class SpotreadSession:
             )
             text = self._take()
             if READY_PROMPT in buf and not ACTION_PROMPT_RE.search(buf):
-                return
+                return actions
             actions += 1
             if actions > MAX_ACTION_PROMPTS:
                 raise tools.ToolError(
@@ -246,6 +257,13 @@ class SpotreadSession:
             if answer.strip().lower().startswith("q"):
                 raise SessionAborted("quit at an instrument prompt")
             self._send(b" ")
+
+    def recalibrate(self, say=None, ask=None) -> None:
+        """Force a fresh calibration even if spotread thinks its cached one
+        is good (``k`` at the ready prompt), relaying any dial prompts."""
+        self._take()
+        self._send(b"k")
+        self.prepare(say, ask)
 
     def measure(self, poll=None, timeout: float = dc.SPOTREAD_TIMEOUT_S):
         """Take one reading of whatever is under the instrument; returns
@@ -275,4 +293,11 @@ class SpotreadSession:
                 "the instrument gave a reading but then asked to be recalibrated before it will take another "
                 f"-- recalibrate it and start the run again. Its output:\n{_clean(buf)[-600:]}"
             )
-        return tuple(float(g) for g in m.groups())
+        xyz = tuple(float(g) for g in m.groups())
+        if not any(xyz):
+            raise DeadReading(
+                "the instrument returned an all-zero reading (X=Y=Z=0). Its dial is probably at the calibration "
+                "position, or the sensor is blocked -- spotread can't tell on a unit with a stale dial position. "
+                "Turn it to the measure position (power-cycle it there) and start the run again."
+            )
+        return xyz

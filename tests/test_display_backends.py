@@ -203,3 +203,28 @@ def test_frame_to_raw_rgb_uses_per_channel_black_not_a_flat_mean():
     assert r == pytest.approx((300 - black["R"]) / 2.0)
     assert g == pytest.approx(((250 - black["G1"]) + (250 - black["G2"])) / 2.0 / 2.0)
     assert b == pytest.approx((600 - black["B"]) / 2.0)
+
+
+def test_argyll_skip_calibration_passes_dash_n_to_spotread(monkeypatch):
+    seen = {}
+
+    class FakeSession:
+        instrument = "X-Rite ColorMunki"
+
+        def __init__(self, args):
+            seen["args"] = list(args)
+
+        def start(self):
+            pass
+
+        def prepare(self, say, ask):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(argyllmod, "SpotreadSession", FakeSession)
+    argyllmod.ArgyllBackend().session()
+    assert "-N" not in seen["args"]
+    argyllmod.ArgyllBackend(skip_calibration=True).session()
+    assert seen["args"] == ["-N", "-e"]

@@ -38,7 +38,8 @@ _METHOD_NAME = "calsuite.display.commands"
 def _add_camera_and_spectro_backend_args(p) -> None:
     """Flags only ``--backend camera``/``--backend spectro`` read (shared by
     ``measure`` and ``validate``, which dispatch through the same
-    ``_measure_via_backend``) -- harmless no-ops for ``argyll``/``synthetic``."""
+    ``_measure_via_backend``) -- harmless no-ops for the backends that don't read them. ``--power-cycle-calibration``
+    is the one ``argyll`` flag."""
     p.add_argument(
         "--camera-device-id", default=None,
         help="(--backend camera) the camera whose exportable camera.color record to use",
@@ -66,6 +67,11 @@ def _add_camera_and_spectro_backend_args(p) -> None:
     p.add_argument(
         "--luminance-scale", type=float, default=1.0,
         help="(--backend spectro) cd/m^2 per integrated-Y unit, from the spectrophotometer's own radiometric calibration",
+    )
+    p.add_argument(
+        "--power-cycle-calibration", action="store_true",
+        help="(--backend argyll) for an instrument that only detects its dial position at power-up: guides you "
+        "through power-cycle at calibration, forced calibration, power-cycle at measure, then measures",
     )
     p.add_argument(
         "--cross-checked-against", default=None,
@@ -290,6 +296,8 @@ def _measure_via_backend(args, patches: list, *, store: storemod.Store):
 
         backend = ArgyllBackend()
         try:
+            if getattr(args, "power_cycle_calibration", False):
+                backend.calibrate_with_power_cycle()
             # Calibrate *before* the window opens: the instrument's own
             # prompts (dial position) need a human who can still see the
             # terminal.

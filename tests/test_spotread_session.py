@@ -61,9 +61,13 @@ while True:
     k = key()
     if k in (b"q", b"\x1b", b""):
         sys.exit(0)
+    if k == b"k":
+        say("\nCalibration complete\n"); say(READY); continue
     n += 1
     if MODE == "hang":
         time.sleep(30)
+    if MODE == "zeros" and n == 2:
+        say("\n Result is XYZ: 0.000000 0.000000 0.000000, D50 Lab: 0.000000 0.000000 0.000000\n"); say(READY); continue
     if MODE == "misread" and n == 2:
         say("\nSpot read failed due to misread\n"); say(READY); continue
     if MODE == "recal_after_result" and n == 2:
@@ -232,3 +236,40 @@ def test_identify_instrument_is_none_when_nothing_is_listed(fake_bin):
 
     fake_bin("spotread", "print(\"    1 = '/dev/ttyS0'\")\n")
     assert identify_instrument() is None
+
+
+def test_recalibrate_forces_a_calibration_even_when_already_ready(spotread):
+    spotread(FAKE_DIAL_WRONG_TRIES=0)
+    with SpotreadSession() as s:
+        assert s.prepare(lambda _: None, lambda _: "") == 1  # fake always asks once
+        s.recalibrate(lambda _: None, lambda _: "")
+        assert s.measure() == pytest.approx((10, 20, 30))  # the k key was not counted as a reading
+
+
+def test_power_cycle_calibration_guides_two_power_cycles_then_measures_with_dash_n(spotread, monkeypatch):
+    spotread(FAKE_DIAL_WRONG_TRIES=0)
+    said, asked = [], []
+    backend = argyllmod.ArgyllBackend()
+    backend.calibrate_with_power_cycle(said.append, lambda p: asked.append(p) or "")
+    text = "\n".join(said)
+    assert text.index("CALIBRATION") < text.index("Calibration complete.") < text.index("MEASURE")
+    assert backend.skip_calibration is True
+    assert len(asked) >= 3  # power-cycle 1, spotread's own dial prompt, power-cycle 2
+
+
+def test_power_cycle_calibration_can_be_quit(spotread):
+    spotread()
+    with pytest.raises(SessionAborted):
+        argyllmod.ArgyllBackend().calibrate_with_power_cycle(lambda _: None, lambda _: "q")
+
+
+def test_an_all_zero_reading_raises_instead_of_being_saved_as_a_measurement(spotread):
+    from calsuite.display.backends.spotread_session import DeadReading
+
+    spotread(FAKE_MODE="zeros", FAKE_DIAL_WRONG_TRIES=0)
+    with SpotreadSession() as s:
+        s.prepare(lambda _: None, lambda _: "")
+        assert s.measure() == pytest.approx((10, 20, 30))
+        with pytest.raises(DeadReading, match="all-zero"):
+            s.measure()
+        assert s.measure() == pytest.approx((30, 60, 90))  # the session stays usable, like a misread
