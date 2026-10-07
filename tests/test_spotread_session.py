@@ -29,6 +29,11 @@ def say(s):
     sys.stdout.write(s); sys.stdout.flush()
 
 def key():
+    if sys.platform == "win32" and sys.stdin.isatty():
+        # A Windows console is line-buffered for os.read; real spotread reads
+        # raw keys through the console API, which msvcrt.getwch mirrors.
+        import msvcrt
+        return msvcrt.getwch().encode()
     return os.read(0, 1)
 
 MODE = os.environ.get("FAKE_MODE", "ok")
