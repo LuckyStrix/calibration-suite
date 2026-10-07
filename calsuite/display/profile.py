@@ -108,12 +108,13 @@ def build_with_colprof(
     tools.run(args, timeout=timeout)
 
     if not icc_path.exists():
-        # colprof writes <basename>.icc (or .icm on some builds) next to
-        # the .ti3 by default; fall back to whichever extension actually
-        # landed rather than assuming.
+        # colprof writes <basename>.icc on Linux but <basename>.icm on
+        # Windows, next to the .ti3, regardless of what was asked for. Move
+        # it to the requested path so `--out profile.icc` is honoured and the
+        # record points at the file the caller named.
         alt = ti3_base.with_suffix(".icm")
         if alt.exists():
-            icc_path = alt
+            alt.replace(icc_path)
 
     profcheck_ok, profcheck_output = None, ""
     if tools.which("profcheck"):
