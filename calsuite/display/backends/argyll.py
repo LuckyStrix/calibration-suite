@@ -15,6 +15,12 @@ the reasons and the real transcript), not one process per patch:
   did not ask for one.
 - Output: ``Result is XYZ: X Y Z, D50 Lab: ...`` -- absolute cd/m^2.
 
+**Windows is the exception** (``one_shot``, on by default there):
+calibration happens in spotread's own console window and every reading is a
+separate ``spotread -N -O``. ``spotread_oneshot.py`` has the reasons -- in
+short, spotread cannot share calsuite's console on Windows, by pipe or by
+ConPTY, without taking the keyboard away from calsuite's own prompts.
+
 Verified against a real ColorMunki Photo (spectrophotometer, ArgyllCMS
 2.3.1) for the prompt/reading protocol only. **Not** yet verified: that the
 readings are *accurate* on this laptop panel (see ``accuracy()``).
@@ -23,14 +29,20 @@ readings are *accurate* on this laptop panel (see ``accuracy()``).
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass, field
 
 import numpy as np
 
 from calsuite.display import constants as dc
 from calsuite.display import window as windowmod
+from calsuite.display.backends import spotread_oneshot
 from calsuite.display.backends.base import Accuracy, Measurement
 from calsuite.display.backends.spotread_session import SessionAborted, SpotreadSession, identify_instrument
+
+def _default_one_shot() -> bool:
+    return sys.platform == "win32"
+
 
 _XYZ_RE = re.compile(
     r"XYZ:\s*([+-]?[\d.]+(?:[eE][+-]?\d+)?)[,\s]+([+-]?[\d.]+(?:[eE][+-]?\d+)?)[,\s]+([+-]?[\d.]+(?:[eE][+-]?\d+)?)"
@@ -50,6 +62,8 @@ class ArgyllBackend:
     instrument_display_type: str | None = None  # spotread -y <X>; instrument-specific, unset by default
     skip_calibration: bool = False  # spotread -N; for a unit calibrated separately (see session())
     cross_checked_against: str | None = None
+    # Windows: calibrate in spotread's own window, one `spotread -N -O` per reading (module docstring).
+    one_shot: bool = field(default_factory=lambda: _default_one_shot())
     instrument: str | None = field(default=None, init=False)  # e.g. "ColorMunki", read from spotread's banner
 
     def accuracy(self) -> Accuracy:
@@ -82,9 +96,12 @@ class ArgyllBackend:
             "\nStep 1 of 2 -- calibrate.\n  Unplug the instrument, turn its dial fully to the CALIBRATION "
             "position (it clicks), then plug it back in."
         )
-        with SpotreadSession(["-e"]) as cal:
-            if cal.prepare(say, ask) == 0:  # already calibrated per its cache: calibrate anyway
-                cal.recalibrate(say, ask)
+        if self.one_shot:
+            spotread_oneshot.calibrate_in_own_window(self._base_args(), say, ask)
+        else:
+            with SpotreadSession(["-e"]) as cal:
+                if cal.prepare(say, ask) == 0:  # already calibrated per its cache: calibrate anyway
+                    cal.recalibrate(say, ask)
         say("Calibration complete.")
         step(
             "\nStep 2 of 2 -- measure.\n  Unplug the instrument, turn its dial to the MEASURE position, "
@@ -92,14 +109,25 @@ class ArgyllBackend:
         )
         self.skip_calibration = True
 
+    def _base_args(self) -> list[str]:
+        args = ["-e"]
+        if self.instrument_display_type:
+            args = ["-y", self.instrument_display_type, *args]
+        return args
+
     def session(self, say=None, ask=None) -> SpotreadSession:
         """Start spotread and bring it to "ready to measure", relaying its
         prompts (calibration, dial position) to the human through
         ``say``/``ask``. Call this **before** opening a patch window. Use
         as a context manager; the process is stopped on exit."""
-        args = ["-e"]
-        if self.instrument_display_type:
-            args = ["-y", self.instrument_display_type, *args]
+        if self.one_shot:
+            if not self.skip_calibration:
+                spotread_oneshot.calibrate_in_own_window(self._base_args(), say, ask)
+            oneshot = spotread_oneshot.OneShotSpotread(self._base_args())
+            oneshot.start()
+            self.instrument = identify_instrument()
+            return oneshot
+        args = self._base_args()
         if self.skip_calibration:
             # -N: "Disable auto calibration of instrument". For a unit whose dial-position
             # report goes stale (it only updates after a power cycle), calibrate once with

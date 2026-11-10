@@ -4,4 +4,3 @@ opencv-python-headless>=4.8
 rawpy
 colour-science
 Pillow
-pywinpty; sys_platform == "win32"

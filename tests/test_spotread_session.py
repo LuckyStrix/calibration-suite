@@ -90,6 +90,10 @@ while True:
 
 @pytest.fixture
 def spotread(fake_bin, monkeypatch):
+    # These tests drive the interactive session; Windows defaults the backend
+    # to one-shot readings instead (tests/test_spotread_oneshot.py).
+    monkeypatch.setattr(argyllmod, "_default_one_shot", lambda: False)
+
     def install(**env):
         fake_bin("spotread", FAKE_SPOTREAD)
         for k, v in env.items():
@@ -177,7 +181,7 @@ def test_backend_measures_patches_and_names_the_instrument(spotread):
     patches = patchesmod.primaries_secondaries()[:3]
     with backend.session(say=lambda _t: None, ask=lambda _p: "") as session:
         results = backend.measure(patches, session)
-    assert [tuple(r.xyz) for r in results] == pytest.approx([(10, 20, 30), (20, 40, 60), (30, 60, 90)])
+    assert [v for r in results for v in r.xyz] == pytest.approx([10, 20, 30, 20, 40, 60, 30, 60, 90])
     # spotread prints no banner without -v: the name has to come from its port list
     assert "X-Rite ColorMunki" in backend.accuracy().basis
 
@@ -200,7 +204,7 @@ def test_command_path_calibrates_before_the_window_and_reads_every_patch(spotrea
 
     measurements, accuracy = cmds._measure_via_backend(args, patches, store=storemod.Store(tmp_path))
 
-    assert [tuple(m.xyz) for m in measurements] == pytest.approx([(10, 20, 30), (20, 40, 60), (30, 60, 90)])
+    assert [v for m in measurements for v in m.xyz] == pytest.approx([10, 20, 30, 20, 40, 60, 30, 60, 90])
     assert len(events) == 3  # two dial prompts (one wrong try), then "place it on the screen"
     assert events[-1].endswith("start measuring:")
     assert "X-Rite ColorMunki" in accuracy.basis

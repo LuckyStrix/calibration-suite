@@ -224,6 +224,7 @@ def test_argyll_skip_calibration_passes_dash_n_to_spotread(monkeypatch):
             pass
 
     monkeypatch.setattr(argyllmod, "SpotreadSession", FakeSession)
+    monkeypatch.setattr(argyllmod, "_default_one_shot", lambda: False)
     argyllmod.ArgyllBackend().session()
     assert "-N" not in seen["args"]
     argyllmod.ArgyllBackend(skip_calibration=True).session()

@@ -30,14 +30,14 @@ recalibrates, ``s`` saves a spectrum...), so the only key this module ever
 sends is a space -- "any other key" -- and ``q`` to quit.
 
 spotread reads its keys as a terminal would, so it runs under a pty on POSIX
-(a plain pipe is not what the transcript above was captured from). On
-Windows ArgyllCMS reads keys through the *console API*, not stdin, and its
-stdout is fully buffered when piped (the prompts have no trailing newline, so
-they never flush) -- a pipe therefore hangs against the real binary. There it
-runs under a ConPTY via ``pywinpty`` instead, with the VT escape sequences
-ConPTY emits stripped from the output. The pipe fallback (used only when
-``pywinpty`` is missing) is enough for a fake spotread in CI but **hangs
-against a real instrument**. The ConPTY path is unverified on real hardware.
+(a plain pipe is not what the transcript above was captured from).
+
+**Not used on Windows against a real instrument.** There ArgyllCMS reads
+keys through the *console API*, not stdin, and its stdout is fully buffered
+when piped, so a pipe hangs; a ConPTY (``pywinpty``) broke keyboard input to
+calsuite's own console on a real laptop. The Argyll backend uses
+``spotread_oneshot.py`` on Windows instead. The pipe path below remains for
+platforms with no ``pty`` -- enough for a fake spotread in CI.
 """
 
 from __future__ import annotations
@@ -45,7 +45,6 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import sys
 import threading
 import time
 
@@ -56,20 +55,6 @@ try:
     import pty
 except ImportError:  # Windows
     pty = None
-
-try:
-    from winpty import PtyProcess
-except ImportError:  # not Windows, or pywinpty not installed
-    PtyProcess = None
-
-ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Z0-9]")
-# ConPTY re-renders the screen, so output arrives wrapped in cursor/erase/title
-# sequences. Left in, they sit between a prompt's last word and the end of the
-# buffer and break the `$`-anchored ACTION_PROMPT_RE.
-
-CONPTY_SIZE = (24, 500)
-# (rows, cols). Wide on purpose: ConPTY hard-wraps at the column count, and a
-# wrap in the middle of READY_PROMPT would stop it from ever matching.
 
 READY_PROMPT = "any other key to take a reading"
 # The last line of the prompt spotread shows whenever it is idle and
@@ -145,7 +130,6 @@ class SpotreadSession:
         self.instrument: str | None = None
         self._proc: subprocess.Popen | None = None
         self._rfd: int | None = None
-        self._pty = None  # winpty.PtyProcess on the Windows ConPTY path
         self._buf = ""
         self._lock = threading.Lock()
         self._changed = threading.Event()
@@ -160,17 +144,7 @@ class SpotreadSession:
         if exe is None:
             raise tools.ToolError("'spotread' is not on PATH")
         argv = [exe, *self.args]
-        if sys.platform == "win32" and PtyProcess is not None:
-            self._pty = PtyProcess.spawn(argv, dimensions=CONPTY_SIZE)
-            self._proc = self._pty  # only a "running" marker; close() branches on self._pty
-        elif sys.platform == "win32":
-            print(
-                "warning: pywinpty is not installed; spotread cannot be driven over pipes on Windows and will "
-                "probably hang. Run: pip install pywinpty",
-                file=sys.stderr,
-            )
-            self._start_pipes(argv)
-        elif pty is not None:
+        if pty is not None:
             master, slave = pty.openpty()
             self._proc = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
             os.close(slave)
@@ -191,16 +165,6 @@ class SpotreadSession:
         if proc is None:
             return
         self._proc = None
-        if self._pty is not None:
-            try:
-                if self._pty.isalive():
-                    self._send(b"q")
-                    time.sleep(0.5)
-                if self._pty.isalive():
-                    self._pty.terminate(force=True)
-            except (OSError, EOFError):
-                pass
-            return
         if proc.poll() is None:
             try:
                 self._send(b"q")
@@ -229,16 +193,9 @@ class SpotreadSession:
     def _reader(self) -> None:
         while True:
             try:
-                if self._pty is not None:
-                    data = ANSI_RE.sub("", self._pty.read(4096)).encode("utf-8")
-                else:
-                    data = os.read(self._rfd, 4096)
-            except (OSError, EOFError):
+                data = os.read(self._rfd, 4096)
+            except OSError:
                 data = b""
-                if self._pty is not None and self._pty.isalive():
-                    continue
-            if not data and self._pty is not None and self._pty.isalive():
-                continue  # an escape-only chunk, not EOF
             if not data:
                 with self._lock:
                     self._eof = True
@@ -253,10 +210,7 @@ class SpotreadSession:
             self._changed.set()
 
     def _send(self, data: bytes) -> None:
-        if self._pty is not None:
-            self._pty.write(data.decode("ascii"))
-        else:
-            os.write(self._wfd, data)
+        os.write(self._wfd, data)
 
     def _take(self) -> str:
         with self._lock:
