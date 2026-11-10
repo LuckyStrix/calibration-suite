@@ -194,6 +194,23 @@ def test_wait_for_placement_blocks_until_space_then_shows_the_square_alone(monke
         window.close_window()
 
 
+def test_wait_for_placement_also_accepts_a_click(monkeypatch):
+    """A click is what gives an unfocused window the keyboard on Windows, so
+    it confirms the square too rather than leaving the person to press
+    SPACE a second time."""
+    import pygame
+
+    from calsuite.display import window
+
+    screen = window.open_window(320, 200, fullscreen=False)
+    try:
+        click = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(10, 10))
+        monkeypatch.setattr(pygame.event, "get", lambda: [click])
+        window.wait_for_placement(screen, _grid_patch(0, 0), 1, 25, sleep=lambda _s: None)
+    finally:
+        window.close_window()
+
+
 @pytest.mark.parametrize("which", ["escape", "quit"])
 def test_wait_for_placement_aborts_on_escape_or_close(monkeypatch, which):
     import pygame

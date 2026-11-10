@@ -13,6 +13,7 @@ Testable headless via ``SDL_VIDEODRIVER=dummy``, set on the environment
 from __future__ import annotations
 
 import os
+import sys
 import time as _time
 
 from calsuite.display import constants as dc
@@ -60,7 +61,46 @@ def open_window(width: int | None = None, height: int | None = None, *, fullscre
         info = pygame.display.Info()
         width = width or info.current_w
         height = height or info.current_h
-    return pygame.display.set_mode((width, height), flags)
+    screen = pygame.display.set_mode((width, height), flags)
+    take_keyboard_focus()
+    return screen
+
+
+def take_keyboard_focus() -> bool:
+    """Make the patch window the one that receives keys (SPACE, ESC).
+
+    On Windows a new window only becomes the foreground window if its
+    process received the last input event. calsuite runs inside a console
+    window owned by another process (conhost / Windows Terminal), so the
+    patch window opened on top but keys kept going to the console: on a
+    real laptop SPACE did nothing at the first uniformity square, while
+    Ctrl+C in the console still worked. A synthetic Alt tap makes this
+    process the last to receive input, after which SetForegroundWindow is
+    honored (the usual workaround for the foreground lock). Returns whether
+    the window has the foreground; elsewhere always True."""
+    if sys.platform != "win32":
+        return True
+    try:  # pragma: no cover -- Windows only
+        import ctypes
+
+        hwnd = pygame.display.get_wm_info().get("window")
+        if not hwnd:
+            return False
+        user32 = ctypes.windll.user32
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        for fn in (user32.ShowWindow, user32.BringWindowToTop, user32.SetForegroundWindow):
+            fn.argtypes = [ctypes.c_void_p] + ([ctypes.c_int] if fn is user32.ShowWindow else [])
+        if user32.GetForegroundWindow() == hwnd:
+            return True
+        vk_menu, keyeventf_keyup = 0x12, 0x0002
+        user32.keybd_event(vk_menu, 0, 0, 0)
+        user32.keybd_event(vk_menu, 0, keyeventf_keyup, 0)
+        user32.ShowWindow(hwnd, 5)  # SW_SHOW
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+        return user32.GetForegroundWindow() == hwnd
+    except Exception:  # pragma: no cover
+        return False
 
 
 def close_window() -> None:
@@ -174,6 +214,7 @@ def draw_placement_prompt(screen: pygame.Surface, patch, index: int, total: int)
         (small, "Put the instrument flat on the WHITE SQUARE.", PLACEMENT_TEXT_GRAY),
         (big, "Then press SPACE", PLACEMENT_KEY_GRAY),
         (small, "Hold still until the next square lights up.   ESC stops the run.", PLACEMENT_TEXT_GRAY),
+        (small, "If SPACE does nothing, click the screen once.", PLACEMENT_TEXT_GRAY),
     ]
     max_px, cx = _text_region(w, h, patch)
     rendered, gap = [], round(short * 0.03)
@@ -223,13 +264,15 @@ def wait_for_placement(screen: pygame.Surface, patch, index: int, total: int, *,
     can't skip a square."""
     sleep = sleep or _time.sleep
     confirm = (pygame.K_SPACE, pygame.K_RETURN, pygame.K_KP_ENTER)
+    take_keyboard_focus()  # it may have been lost since the window opened
     pygame.event.clear()
     draw_placement_prompt(screen, patch, index, total)
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
                 raise WindowAborted("aborted at a placement prompt")
-            if event.type == pygame.KEYDOWN and event.key in confirm:
+            # A click counts too: it is also what gives an unfocused window the keyboard.
+            if (event.type == pygame.KEYDOWN and event.key in confirm) or event.type == pygame.MOUSEBUTTONDOWN:
                 show_patch(screen, patch.rgb, position=patch.position, size_frac=patch.size_frac)
                 return
         sleep(0.02)
