@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from calsuite import console
 from calsuite.display import constants as dc
 from calsuite.display import window as windowmod
 from calsuite.display.backends import spotread_oneshot
@@ -85,7 +86,7 @@ class ArgyllBackend:
         ``session()`` runs with ``-N`` so spotread trusts the calibration
         it just saved (Argyll caches it on disk, per instrument) instead of
         asking about a dial position the unit can't report."""
-        say, ask = say or print, ask or input
+        say, ask = say or print, ask or console.prompt
 
         def step(text: str) -> None:
             say(text)

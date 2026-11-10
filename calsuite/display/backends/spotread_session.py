@@ -48,7 +48,7 @@ import subprocess
 import threading
 import time
 
-from calsuite import tools
+from calsuite import console, tools
 from calsuite.display import constants as dc
 
 try:
@@ -244,7 +244,7 @@ class SpotreadSession:
         ``say``/``ask``. Run this **before** any patch window opens -- the
         person must be able to see the terminal. Returns how many
         prompts were relayed (0 = it was already calibrated)."""
-        say, ask = say or print, ask or input
+        say, ask = say or print, ask or console.prompt
         actions = 0
         while True:
             buf = self._wait_for(

@@ -38,7 +38,7 @@ import sys
 import threading
 import time
 
-from calsuite import tools
+from calsuite import console, tools
 from calsuite.display import constants as dc
 from calsuite.display.backends.spotread_session import (
     RESULT_RE,
@@ -64,7 +64,7 @@ def run_in_own_console(argv: list[str]) -> int:
 def calibrate_in_own_window(base_args: list[str], say=None, ask=None) -> None:
     """Have the human calibrate the instrument in a separate spotread window
     (see the module docstring), then confirm before going on."""
-    say, ask = say or print, ask or input
+    say, ask = say or print, ask or console.prompt
     exe = tools.which("spotread")
     if exe is None:
         raise tools.ToolError("'spotread' is not on PATH")

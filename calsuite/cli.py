@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from calsuite import __version__, config, devices as devicesmod, store
+from calsuite import __version__, config, console, devices as devicesmod, store
 from calsuite.camera import color_commands, commands as camera_commands
 from calsuite.capture import gphoto2
 from calsuite.display import commands as display_commands
@@ -243,6 +243,7 @@ def main(argv: list | None = None) -> int:
     # force UTF-8 for this process's own stdout/stderr; scoped to Windows
     # so Linux/macOS (already UTF-8 almost everywhere) are untouched.
     if sys.platform == "win32":  # pragma: no cover -- exercised only on Windows CI
+        console.save_mode()  # restored before every prompt (console.py)
         for stream in (sys.stdout, sys.stderr):
             if hasattr(stream, "reconfigure"):
                 stream.reconfigure(encoding="utf-8", errors="replace")

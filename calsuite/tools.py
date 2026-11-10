@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 
 # Every external binary the suite ever shells out to. Not all are needed for
@@ -78,9 +79,22 @@ def run(args, *, timeout: float = DEFAULT_TIMEOUT_S, check: bool = True) -> Tool
     # path straight to subprocess lets it launch directly on every OS
     # without needing `shell=True`.
     resolved_args = [exe, *args[1:]]
+    # No tool here takes keyboard input, so none gets calsuite's console:
+    # stdin is NUL and, on Windows, the tool gets its own hidden console.
+    # ArgyllCMS tools (dispwin, spotread) switch whatever console they run in
+    # to raw input and can leave it that way, after which calsuite's own
+    # prompts never receive Enter (calsuite/console.py).
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
     try:
         proc = subprocess.run(
-            resolved_args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
+            resolved_args,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            creationflags=creationflags,
         )
     except subprocess.TimeoutExpired as exc:
         raise ToolError(f"{' '.join(args)} timed out after {timeout}s") from exc

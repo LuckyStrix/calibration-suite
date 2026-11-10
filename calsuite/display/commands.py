@@ -15,7 +15,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from calsuite import __version__, config, devices as devicesmod, store as storemod
+from calsuite import __version__, config, console, devices as devicesmod, store as storemod
 from calsuite.display import constants as dc
 from calsuite.display import install_linux, install_windows, osstate
 from calsuite.display import report as reportmod
@@ -313,7 +313,7 @@ def _measure_via_backend(args, patches: list, *, store: storemod.Store):
                         "move the instrument onto it and press SPACE -- the instructions are shown on the screen, "
                         "not here."
                     )
-                input("  >> Press Enter to start measuring: ")
+                console.prompt("  >> Press Enter to start measuring: ")
                 screen = windowmod.open_window(args.width, args.height, fullscreen=not args.windowed)
                 try:
                     measurements = backend.measure_via_window(screen, patches, session, sleep=None)

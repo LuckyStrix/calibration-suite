@@ -41,3 +41,11 @@ def test_run_times_out(fake_bin):
     fake_bin("slowcmd", "import time\ntime.sleep(5)\n")
     with pytest.raises(tools.ToolError):
         tools.run(["slowcmd"], timeout=0.2)
+
+
+def test_run_never_hands_a_tool_this_process_stdin(fake_bin):
+    """A tool that reads stdin gets EOF at once, not calsuite's console --
+    an ArgyllCMS tool sharing the console left it in raw mode, and the next
+    prompt never received Enter (calsuite/console.py)."""
+    fake_bin("readsstdin", "import sys\nprint(repr(sys.stdin.read()))\n")
+    assert tools.run(["readsstdin"], timeout=10).stdout.strip() == "''"
